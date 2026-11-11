@@ -118,6 +118,55 @@ Accepted trade-offs:
 
 Linux and macOS only.
 
+### Agent overrides
+
+Bring your own agent image, or add sidecars such as an egress proxy, with an `agent`
+Compose fragment (keys `services`, `volumes`, `networks`) in the global config, a template
+or a set plan. The set plan wins, then the template, then the config: whichever applies
+when the set is created is **pinned into its plan**, like `source`, so later config edits
+don't change an existing set (edit its `sandbox.yaml` instead).
+
+`services.agent` is merged over the default agent, then sandbox **re-applies its
+guarantees** on top: the mounts above (plus the CA certificate, once sets serve HTTPS),
+the host UID:GID as `user`, `CLAUDE_CONFIG_DIR` and `HOME`, `cap_drop: [ALL]` and
+`no-new-privileges`. An override can't run the agent as root, add capabilities
+(`privileged`, `cap_add`, `devices`, `pid`/`ipc`/`userns_mode`, `network_mode`,
+`volumes_from` are removed), or mount the Docker socket (a `docker.sock` or a directory
+holding one, such as `/var/run`). `up` warns about each setting it overrides. Extra
+volumes and environment variables are kept.
+
+A custom `image` replaces the bundled one and is pulled like any other image (`build` is
+not supported: build it yourself and set `image`). It must work under any UID with a
+writable `HOME` and have `sh`, `git` and `claude` on its PATH: `up` runs it once with
+`docker run` to check, and fails before any container starts if one is missing.
+
+Every other service in the fragment runs with the set, labelled with it, and joins the
+set network (its `network_mode` is dropped; `default` is added to its `networks`), so the
+agent and the repos' services reach it by name. A fragment service may not reuse the name
+of a repo's service.
+
+**Egress is unrestricted in the MVP**: the agent can reach any host the Docker host can.
+To restrict it, bring your own proxy, for example:
+
+```yaml
+# ~/.config/sandbox/config.yaml (or under `agent:` in a template or set plan)
+agent:
+  services:
+    agent:
+      environment:
+        HTTPS_PROXY: http://proxy:3128
+        HTTP_PROXY: http://proxy:3128
+        NO_PROXY: localhost,127.0.0.1,mysql
+    proxy:
+      image: ubuntu/squid:6.6-24.04_edge
+      volumes:
+        - /home/me/sandbox/squid.conf:/etc/squid/squid.conf:ro   # your allowlist
+```
+
+Proxy variables are honoured by `git`, `claude` and most tools, but nothing stops a
+process from ignoring them: the agent stays on the set network, which has a route out.
+Enforced egress restriction is out of scope for the MVP.
+
 ## Configuration
 
 `~/.config/sandbox/config.yaml` (override the path with `SANDBOX_CONFIG`). Every key is
@@ -128,7 +177,7 @@ ip_pool: 127.42.0.0/16            # loopback range; each set leases one /24
 templates_root: ~/.config/sandbox/plans
 sets_root: ~/sandbox/sets
 state_dir: ~/.local/state/sandbox # lock files and other cross-process host state
-agent: null                       # default agent override (a Compose service fragment)
+agent: null                       # default agent override (see Agent overrides)
 ```
 
 A set's plan lives at `<sets_root>/<set>/sandbox.yaml`. The set's name is its directory

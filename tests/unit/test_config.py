@@ -26,11 +26,14 @@ def test_default_location_is_read(env: Env, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv("SANDBOX_CONFIG")
     path = default_config_path()
     path.parent.mkdir(parents=True)
-    path.write_text("ip_pool: 127.50.0.0/16\nsets_root: ~/elsewhere\nagent: {image: mine}\n")
+    path.write_text(
+        "ip_pool: 127.50.0.0/16\nsets_root: ~/elsewhere\n"
+        "agent: {services: {agent: {image: mine}}}\n"
+    )
     config = load_config()
     assert config.ip_pool == IPv4Network("127.50.0.0/16")
     assert config.sets_root == Path.home() / "elsewhere"
-    assert config.agent == {"image": "mine"}
+    assert config.agent == {"services": {"agent": {"image": "mine"}}}
 
 
 def test_empty_file_means_defaults(tmp_path: Path) -> None:

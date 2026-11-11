@@ -11,6 +11,7 @@ from typing import Annotated, Any, Final
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
+from sandbox.compose.agent import AgentOverride
 from sandbox.errors import SandboxError
 from sandbox.names import validate_repo_name
 from sandbox.yamlio import dump_yaml, read_yaml, validate_file
@@ -49,7 +50,9 @@ class Plan[R: RepoSpec](BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     repos: dict[RepoName, R] = Field(min_length=1)
-    agent: dict[str, Any] | None = None
+    # A Compose fragment merged over the default agent (see sandbox.compose.agent). A set
+    # plan pins the one it was created with: its own, else the template's, else the config's.
+    agent: AgentOverride | None = None
 
     def sources(self) -> dict[str, Path]:
         return {name: repo.source for name, repo in self.repos.items()}

@@ -131,7 +131,7 @@ def up(
             else None
         )
         deps = get_deps(ctx)
-        provisioner = Provisioner(config, deps.git, deps.compose, warn)
+        provisioner = Provisioner(config, deps.git, deps.compose, warn, images=deps.images)
         result = asyncio.run(
             provisioner.up(
                 set_name,

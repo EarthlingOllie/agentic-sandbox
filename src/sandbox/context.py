@@ -9,6 +9,7 @@ from typing import Final, NoReturn
 
 import typer
 
+from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.compose.cli import Compose, SubprocessCompose
 from sandbox.errors import SandboxError
 from sandbox.git import Git, SubprocessGit
@@ -22,6 +23,7 @@ class Deps:
 
     git: Git = field(default_factory=SubprocessGit)
     compose: Compose = field(default_factory=SubprocessCompose)
+    images: ImageProbe = field(default_factory=DockerImageProbe)
 
 
 def usage_error(message: str) -> NoReturn:

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.services import RepoCompose
@@ -51,6 +52,7 @@ class UpContext:
     # True when the plan was already on disk before this `up` started.
     plan_on_disk: bool
     recreate: bool
+    images: ImageProbe = field(default_factory=DockerImageProbe)
     # Filled in by validation steps.
     repo_composes: list[RepoCompose] = field(default_factory=list[RepoCompose])
     services: list[str] = field(default_factory=list[str])

@@ -8,10 +8,11 @@ can point the whole tool at a scratch directory by writing one config file and s
 import os
 from ipaddress import IPv4Network
 from pathlib import Path
-from typing import Annotated, Any, Final
+from typing import Annotated, Final
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 
+from sandbox.compose.agent import AgentOverride
 from sandbox.errors import SandboxError
 from sandbox.yamlio import read_yaml, validate_file
 
@@ -67,9 +68,10 @@ class Config(BaseModel):
         default_factory=_default_state_dir,
         description="Lock files, IP leases and other cross-process host state.",
     )
-    agent: dict[str, Any] | None = Field(
+    agent: AgentOverride | None = Field(
         default=None,
-        description="Default agent override: a Compose service fragment.",
+        description="Default agent override: a Compose fragment (services, volumes, "
+        "networks) merged over the default agent; pinned into each new set's plan.",
     )
 
     @field_validator("ip_pool")

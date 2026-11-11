@@ -3,8 +3,9 @@
 ``up`` resolves the plan, then runs the step pipeline (``sandbox.pipeline``):
 
 - ``VALIDATION_STEPS`` check every repo, its ``.sandbox/`` and compose file, deduplicate
-  same-named services across repos (``sandbox.compose.dedup``), then observe the set's
-  state. Nothing is created until all of them pass.
+  same-named services across repos (``sandbox.compose.dedup``), check the agent override
+  and its image (``sandbox.agent_override``), then observe the set's state.
+  Nothing is created until all of them pass.
 - The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
 - ``PROVISION_STEPS`` write the plan, ensure worktrees and bring services up healthy as
   Compose project ``sandbox-<set>``; on failure or Ctrl-C, started steps roll back.
@@ -16,8 +17,10 @@ A later concern adds its step in its own module and one line to one of the two l
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
+from sandbox.agent_image import DockerImageProbe, ImageProbe
+from sandbox.agent_override import check_agent_override
 from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import resolve as resolve_services
@@ -164,7 +167,14 @@ async def _compose_up(ctx: UpContext) -> None:
     # Every repo's own file, then the override: one instance per shared service, plus the
     # agent every set runs (so Compose runs even when no repo declares services).
     override = write_override(
-        OverrideContext(ctx.set_name, ctx.set_dir, ctx.repo_composes, ctx.graph, ctx.plan.sources())
+        OverrideContext(
+            ctx.set_name,
+            ctx.set_dir,
+            ctx.repo_composes,
+            ctx.graph,
+            ctx.plan.sources(),
+            ctx.plan.agent,
+        )
     )
     await ctx.compose.up(ctx.project, [*(rc.file for rc in ctx.repo_composes), override])
 
@@ -177,7 +187,8 @@ VALIDATION_STEPS: Final[list[Step]] = [
     Step("repos", _validate_repos),
     Step("compose-files", _load_composes),
     Step("dedup", _dedup_services),
-    # Register further checks (dedup, hostname clashes, agent image) above this line.
+    Step("agent-override", check_agent_override),
+    # Register further checks (hostname clashes, prerequisites) above this line.
     Step("observe-state", _observe_state),
 ]
 
@@ -191,8 +202,16 @@ PROVISION_STEPS: Final[list[Step]] = [
 
 
 class Provisioner:
-    def __init__(self, config: Config, git: Git, compose: Compose, warn: Warn) -> None:
+    def __init__(
+        self,
+        config: Config,
+        git: Git,
+        compose: Compose,
+        warn: Warn,
+        images: ImageProbe | None = None,
+    ) -> None:
         self._config = config
+        self._images = images if images is not None else DockerImageProbe()
         self._git = git
         self._compose = compose
         self._warn = warn
@@ -242,6 +261,7 @@ class Provisioner:
             plan=plan,
             plan_on_disk=on_disk is not None,
             recreate=recreate,
+            images=self._images,
         )
         await validate(VALIDATION_STEPS, ctx)
         if ctx.action is not UpAction.NOOP:
@@ -284,7 +304,9 @@ class Provisioner:
     async def _plan_from_directory(self, cwd: Path, names: Sequence[str]) -> SetPlan:
         """Resolve ``--repos`` names against ``cwd``, pinning absolute sources and bases."""
         sources = await self._sources_from_directory(cwd, names)
-        return await self._pin_bases({name: (source, None) for name, source in sources.items()})
+        return await self._pin_bases(
+            {name: (source, None) for name, source in sources.items()}, self._config.agent
+        )
 
     async def _plan_from_template(self, template: TemplatePlan) -> SetPlan:
         """Pin a template into a set plan; a repo without ``base`` gets its checked-out branch.
@@ -298,8 +320,10 @@ class Provisioner:
                 errors.append(problem)
         if errors:
             raise SandboxError("\n".join(errors))
+        # The template's agent override wins over the config's; either is pinned.
         return await self._pin_bases(
-            {name: (repo.source, repo.base) for name, repo in template.repos.items()}
+            {name: (repo.source, repo.base) for name, repo in template.repos.items()},
+            template.agent if template.agent is not None else self._config.agent,
         )
 
     async def _sources_from_directory(self, cwd: Path, names: Sequence[str]) -> dict[str, Path]:
@@ -324,8 +348,11 @@ class Provisioner:
             raise SandboxError("\n".join(errors))
         return sources
 
-    async def _pin_bases(self, repos: dict[str, tuple[Path, str | None]]) -> SetPlan:
-        """Build a set plan, pinning each missing ``base`` to the source's checked-out branch."""
+    async def _pin_bases(
+        self, repos: dict[str, tuple[Path, str | None]], agent: dict[str, Any] | None
+    ) -> SetPlan:
+        """Build a set plan, pinning each missing ``base`` to the source's checked-out branch
+        and the agent override in effect."""
         errors: list[str] = []
         pinned: dict[str, SetRepo] = {}
         for name, (source, base) in repos.items():
@@ -339,7 +366,7 @@ class Provisioner:
             pinned[name] = SetRepo(source=source, base=resolved)
         if errors:
             raise SandboxError("\n".join(errors))
-        return SetPlan(repos=pinned)
+        return SetPlan(repos=pinned, agent=agent)
 
 
 def _refuse_if_different(

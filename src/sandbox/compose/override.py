@@ -30,6 +30,8 @@ class OverrideContext:
     graph: ServiceGraph = field(default_factory=lambda: ServiceGraph({}))
     # Every repo in the plan (including worktree-only ones) -> its absolute source.
     sources: Mapping[str, Path] = field(default_factory=dict[str, Path])
+    # The plan's agent override, if any (see sandbox.compose.agent).
+    agent: Mapping[str, Any] | None = None
 
 
 Fragment = Callable[[OverrideContext], dict[str, Any]]
@@ -48,7 +50,7 @@ def _relocate(ctx: OverrideContext) -> dict[str, Any]:
 
 
 def _agent(ctx: OverrideContext) -> dict[str, Any]:
-    return agent_fragment(ctx.set_name, ctx.set_dir, ctx.sources)
+    return agent_fragment(ctx.set_name, ctx.set_dir, ctx.sources, ctx.agent)
 
 
 FRAGMENTS: Final[list[Fragment]] = [
