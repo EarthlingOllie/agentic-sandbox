@@ -10,8 +10,9 @@ plan, cuts the worktrees, then starts the services a repo declares in
 (a repo without `compose.yaml` takes part with its worktree only). Inside the set, services
 reach each other by their short names (`mysql`). `sandbox SET down` stops the containers and
 removes the set's network and volumes; worktrees and the plan are kept. Repos that declare
-the same service share one instance of it (see [Shared services](#shared-services)). No
-loopback IPs or hosts entries yet.
+the same service share one instance of it (see [Shared services](#shared-services)). Once
+the services are up, `up` writes the set's hostnames into the hosts file (see
+[Hosts file](#hosts-file)); `down` removes them.
 
 ```console
 $ cd ~/code            # holds ./api and ./web, each with a .sandbox/ directory
@@ -208,8 +209,30 @@ ip_pool: 127.42.0.0/16            # loopback range; each set leases one /24
 templates_root: ~/.config/sandbox/plans
 sets_root: ~/sandbox/sets
 state_dir: ~/.local/state/sandbox # lock files and other cross-process host state
+hosts_file: null                  # unset: /etc/hosts via `sudo -n sandbox-hosts` (see Hosts file)
 agent: null                       # default agent override (see Agent overrides)
 ```
+
+## Hosts file
+
+After a set's services are up, `up` writes one block per set to `/etc/hosts`, holding
+exactly that set's hostnames and their leased IPs. Nothing outside a set's own block is
+touched; `down` (and a rolled-back `up`) removes the block.
+
+```text
+# sandbox:jira-123
+127.42.0.1	mysql.jira-123.test
+127.42.0.2	redis.jira-123.test
+# end sandbox:jira-123
+```
+
+`sandbox` writes it non-interactively through `sudo -n sandbox-hosts`, a small helper that
+`sudo sandbox setup` installs root-owned, with a NOPASSWD sudoers rule scoped to it. The
+helper only ever edits `/etc/hosts`, rewrites only the named set's block under an
+exclusive `flock` (so concurrent sets never corrupt the file), and refuses any IP outside
+the set's own /24 and any name that is not a `<label>.<set>.test` hostname, so it cannot be
+used to redirect a real domain. Setting `hosts_file` to a path makes `sandbox` write that
+file directly instead, without sudo; the tests use this with a temp file.
 
 A set's plan lives at `<sets_root>/<set>/sandbox.yaml`. The set's name is its directory
 name and never appears in the plan. `up` never overwrites a plan and refuses a `--repos`

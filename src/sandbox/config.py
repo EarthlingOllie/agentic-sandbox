@@ -68,6 +68,12 @@ class Config(BaseModel):
         default_factory=_default_state_dir,
         description="Lock files, IP leases and other cross-process host state.",
     )
+    hosts_file: HostPath | None = Field(
+        default=None,
+        description="Unset (the default): each set's hosts block goes into /etc/hosts through "
+        "`sudo -n sandbox-hosts`. A path: the block is written to that file directly, without "
+        "sudo (tests and unprivileged setups).",
+    )
     agent: AgentOverride | None = Field(
         default=None,
         description="Default agent override: a Compose fragment (services, volumes, "

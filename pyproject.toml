@@ -13,6 +13,7 @@ dependencies = [
 
 [project.scripts]
 sandbox = "sandbox.cli:main"
+sandbox-hosts = "sandbox.hosts_helper:main"
 
 [dependency-groups]
 dev = [

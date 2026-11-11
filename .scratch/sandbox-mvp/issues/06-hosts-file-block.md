@@ -4,10 +4,10 @@
 
 **Blocked by:** 05 (loopback IP leases)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The hosts block is written after the set is up and contains exactly that set's hostnames and IPs; other entries in the file are never touched
-- [ ] `down` removes the set's block; rollback removes it too
-- [ ] Writes are `flock`-guarded so concurrent sets never corrupt the file
-- [ ] The `sandbox-hosts` helper rewrites only the named set's block and refuses IPs outside that set's /24 and names not ending in `.test`
-- [ ] Production path invokes the helper non-interactively (`sudo -n`); tests point the hosts path at a temp file and write directly
+- [x] The hosts block is written after the set is up and contains exactly that set's hostnames and IPs; other entries in the file are never touched
+- [x] `down` removes the set's block; rollback removes it too
+- [x] Writes are `flock`-guarded so concurrent sets never corrupt the file
+- [x] The `sandbox-hosts` helper rewrites only the named set's block and refuses IPs outside that set's /24 and names not ending in `.test`
+- [x] Production path invokes the helper non-interactively (`sudo -n`); tests point the hosts path at a temp file and write directly

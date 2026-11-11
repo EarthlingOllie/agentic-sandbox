@@ -18,7 +18,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.compose.cli import Compose
@@ -31,6 +31,9 @@ from sandbox.leases import SetLease
 from sandbox.plan import SetPlan
 from sandbox.state import SetState, UpAction
 from sandbox.worktrees import WorktreeManager, WorktreeResult
+
+if TYPE_CHECKING:
+    from sandbox.hosts import HostsWriter
 
 Warn = Callable[[str], None]
 
@@ -54,6 +57,8 @@ class UpContext:
     plan_on_disk: bool
     recreate: bool
     images: ImageProbe = field(default_factory=DockerImageProbe)
+    # Writes the set's hosts block; None means the one the config selects.
+    hosts: "HostsWriter | None" = None
     # Filled in by validation steps.
     repo_composes: list[RepoCompose] = field(default_factory=list[RepoCompose])
     services: list[str] = field(default_factory=list[str])

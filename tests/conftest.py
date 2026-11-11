@@ -28,6 +28,7 @@ class Env:
     sets_root: Path
     templates_root: Path
     state_dir: Path
+    hosts_file: Path
 
     def set_dir(self, name: str) -> Path:
         return self.sets_root / name
@@ -54,11 +55,14 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
         sets_root=root / "sets",
         templates_root=root / "plans",
         state_dir=root / "state",
+        # The hosts block is written straight to this file; never via sudo in tests.
+        hosts_file=root / "hosts",
     )
     environment.config_file.write_text(
         f"sets_root: {environment.sets_root}\n"
         f"templates_root: {environment.templates_root}\n"
         f"state_dir: {environment.state_dir}\n"
+        f"hosts_file: {environment.hosts_file}\n"
     )
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)

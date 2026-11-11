@@ -8,10 +8,11 @@
   Nothing is created until all of them pass.
 - The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
 - ``PROVISION_STEPS`` write the plan, ensure worktrees and bring services up healthy as
-  Compose project ``sandbox-<set>``; on failure or Ctrl-C, started steps roll back.
+  Compose project ``sandbox-<set>``, then write the set's hosts block (``sandbox.hosts``);
+  on failure or Ctrl-C, started steps roll back.
 
 A later concern adds its step in its own module and one line to one of the two lists.
-``down`` stops the project and leaves worktrees alone.
+``down`` stops the project, removes the hosts block and leaves worktrees alone.
 """
 
 from collections.abc import Sequence
@@ -30,6 +31,7 @@ from sandbox.compose.services import SANDBOX_DIRNAME, RepoCompose, load_repo_com
 from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.git import Git
+from sandbox.hosts import HostsWriter, hosts_writer, remove_hosts_block, write_hosts_block
 from sandbox.names import agent_branch, validate_repo_name, validate_set_name
 from sandbox.pipeline import Step, UpContext, Warn, fail_fast, provision, validate
 from sandbox.plan import (
@@ -202,6 +204,7 @@ PROVISION_STEPS: Final[list[Step]] = [
     Step("worktrees", _ensure_worktrees),
     Step("stop-for-recreate", _stop_for_recreate),
     Step("compose-up", _compose_up, rollback=_compose_down),
+    Step("hosts-block", write_hosts_block, rollback=remove_hosts_block),
     # Register post-up steps (hosts block, init hooks) below this line.
 ]
 
@@ -214,8 +217,10 @@ class Provisioner:
         compose: Compose,
         warn: Warn,
         images: ImageProbe | None = None,
+        hosts: HostsWriter | None = None,
     ) -> None:
         self._config = config
+        self._hosts = hosts if hosts is not None else hosts_writer(config)
         self._images = images if images is not None else DockerImageProbe()
         self._git = git
         self._compose = compose
@@ -267,6 +272,7 @@ class Provisioner:
             plan_on_disk=on_disk is not None,
             recreate=recreate,
             images=self._images,
+            hosts=self._hosts,
         )
         await validate(VALIDATION_STEPS, ctx)
         if ctx.action is not UpAction.NOOP:
@@ -291,6 +297,7 @@ class Provisioner:
             raise SandboxError(f"no set {set_name!r}: {plan_path(set_dir)} does not exist")
         project = project_name(set_name)
         await self._compose.down(project)
+        await self._hosts.remove(set_name)
         return DownResult(set_name, set_dir, project)
 
     async def _requested_plan(
