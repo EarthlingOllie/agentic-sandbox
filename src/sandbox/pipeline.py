@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from sandbox.compose.cli import Compose
+from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.services import RepoCompose
 from sandbox.config import Config
 from sandbox.errors import SandboxError
@@ -53,6 +54,7 @@ class UpContext:
     # Filled in by validation steps.
     repo_composes: list[RepoCompose] = field(default_factory=list[RepoCompose])
     services: list[str] = field(default_factory=list[str])
+    graph: ServiceGraph = field(default_factory=lambda: ServiceGraph({}))
     running: set[str] = field(default_factory=set[str])
     state: SetState = SetState.ABSENT
     action: UpAction = UpAction.PROVISION

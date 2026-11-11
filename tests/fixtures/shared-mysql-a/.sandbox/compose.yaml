@@ -1,0 +1,18 @@
+# Dedup fixture: the same `mysql` as shared-mysql-b, written differently: through `extends`
+# (with the healthcheck only this repo sets), plus a port, labels and an x-sandbox field,
+# all of which dedup tolerates.
+services:
+  mysql:
+    extends:
+      file: base.yaml
+      service: mysql-base
+    volumes:
+      - data:/var/lib/mysql
+    ports:
+      - "3306"
+    labels:
+      owner: shared-mysql-a
+    x-sandbox:
+      note: ignored by dedup
+volumes:
+  data: {}

@@ -1,0 +1,21 @@
+# Dedup fixture: the same `mysql` as shared-mysql-a, written differently (list environment,
+# no healthcheck, other labels), plus a service of its own whose relative paths must resolve
+# from this repo even though shared-mysql-a's file comes first.
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      - MYSQL_ROOT_PASSWORD=sandbox
+      - MYSQL_DATABASE=app
+    volumes:
+      - data:/var/lib/mysql
+    labels:
+      owner: shared-mysql-b
+  toolbox:
+    image: mysql:8.4
+    entrypoint: ["sleep", "infinity"]
+    env_file: toolbox.env
+    volumes:
+      - ./conf/marker.txt:/marker.txt:ro
+volumes:
+  data: {}

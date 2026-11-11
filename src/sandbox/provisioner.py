@@ -2,8 +2,9 @@
 
 ``up`` resolves the plan, then runs the step pipeline (``sandbox.pipeline``):
 
-- ``VALIDATION_STEPS`` check every repo, its ``.sandbox/`` and compose file, then observe the
-  set's state. Nothing is created until all of them pass.
+- ``VALIDATION_STEPS`` check every repo, its ``.sandbox/`` and compose file, deduplicate
+  same-named services across repos (``sandbox.compose.dedup``), then observe the set's
+  state. Nothing is created until all of them pass.
 - The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
 - ``PROVISION_STEPS`` write the plan, ensure worktrees and bring services up healthy as
   Compose project ``sandbox-<set>``; on failure or Ctrl-C, started steps roll back.
@@ -19,6 +20,7 @@ from typing import Final
 
 from sandbox.compose import project_name
 from sandbox.compose.cli import Compose
+from sandbox.compose.dedup import resolve as resolve_services
 from sandbox.compose.override import OverrideContext, write_override
 from sandbox.compose.services import SANDBOX_DIRNAME, RepoCompose, load_repo_compose
 from sandbox.config import Config
@@ -97,6 +99,12 @@ async def _load_composes(ctx: UpContext) -> None:
     ctx.services = sorted({service for rc in found for service in rc.services})
 
 
+async def _dedup_services(ctx: UpContext) -> None:
+    """One instance per same-named service, or fail with a diff naming both repos."""
+    ctx.graph = await resolve_services(ctx.compose, ctx.project, ctx.repo_composes)
+    ctx.services = ctx.graph.names()
+
+
 async def _observe_state(ctx: UpContext) -> None:
     """Read the set's state (last, so it reflects Docker as close to acting as possible)."""
     running: set[str] = set()
@@ -153,7 +161,10 @@ async def _stop_for_recreate(ctx: UpContext) -> None:
 async def _compose_up(ctx: UpContext) -> None:
     if not ctx.services:
         return
-    override = write_override(OverrideContext(ctx.set_name, ctx.set_dir, ctx.repo_composes))
+    # Every repo's own file, then the override: one instance per shared service.
+    override = write_override(
+        OverrideContext(ctx.set_name, ctx.set_dir, ctx.repo_composes, ctx.graph)
+    )
     await ctx.compose.up(ctx.project, [*(rc.file for rc in ctx.repo_composes), override])
 
 
@@ -165,6 +176,7 @@ async def _compose_down(ctx: UpContext) -> None:
 VALIDATION_STEPS: Final[list[Step]] = [
     Step("repos", _validate_repos),
     Step("compose-files", _load_composes),
+    Step("dedup", _dedup_services),
     # Register further checks (dedup, hostname clashes, agent image) above this line.
     Step("observe-state", _observe_state),
 ]

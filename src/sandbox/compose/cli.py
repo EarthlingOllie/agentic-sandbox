@@ -4,9 +4,10 @@ Unit tests substitute ``tests.fakes_compose.FakeCompose`` for :class:`Subprocess
 """
 
 import asyncio
+import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from sandbox.errors import SandboxError
 
@@ -27,6 +28,11 @@ class Compose(Protocol):
 
     async def running_services(self, project: str) -> set[str]:
         """Names of the project's services that have a running container."""
+        ...
+
+    async def config(self, project: str, files: list[Path]) -> dict[str, Any]:
+        """The normalised model of ``files`` (``extends`` resolved, paths absolute,
+        variables interpolated), as ``docker compose config`` prints it."""
         ...
 
 
@@ -69,3 +75,14 @@ class SubprocessCompose:
     async def running_services(self, project: str) -> set[str]:
         output = await self._check(["-p", project, "ps", "--services", "--status", "running"])
         return {line.strip() for line in output.splitlines() if line.strip()}
+
+    async def config(self, project: str, files: list[Path]) -> dict[str, Any]:
+        file_args = [arg for path in files for arg in ("-f", str(path))]
+        output = await self._check(["-p", project, *file_args, "config", "--format", "json"])
+        try:
+            document = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise ComposeError(f"docker compose config printed invalid JSON: {exc}") from exc
+        if not isinstance(document, dict):
+            raise ComposeError("docker compose config did not print a mapping")
+        return {str(key): value for key, value in cast(dict[Any, Any], document).items()}

@@ -8,11 +8,12 @@ under ``sandbox.compose`` and one line to ``FRAGMENTS``.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
 from sandbox.compose import project_name
+from sandbox.compose.dedup import ServiceGraph, relocation_fragment
 from sandbox.compose.services import RepoCompose, set_labels_fragment
 from sandbox.yamlio import dump_yaml
 
@@ -24,6 +25,8 @@ class OverrideContext:
     set_name: str
     set_dir: Path
     repos: list[RepoCompose]
+    # The deduplicated services of all repos (see sandbox.compose.dedup).
+    graph: ServiceGraph = field(default_factory=lambda: ServiceGraph({}))
 
 
 Fragment = Callable[[OverrideContext], dict[str, Any]]
@@ -37,9 +40,14 @@ def _set_labels(ctx: OverrideContext) -> dict[str, Any]:
     return set_labels_fragment(ctx.set_name, ctx.repos)
 
 
+def _relocate(ctx: OverrideContext) -> dict[str, Any]:
+    return relocation_fragment(ctx.graph, ctx.repos)
+
+
 FRAGMENTS: Final[list[Fragment]] = [
     _project,
     _set_labels,
+    _relocate,
 ]
 
 

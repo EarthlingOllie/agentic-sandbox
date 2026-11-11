@@ -9,8 +9,9 @@ plan, cuts the worktrees, then starts the services a repo declares in
 `.sandbox/compose.yaml` as Compose project `sandbox-<set>` and waits until they are healthy
 (a repo without `compose.yaml` takes part with its worktree only). Inside the set, services
 reach each other by their short names (`mysql`). `sandbox SET down` stops the containers and
-removes the set's network and volumes; worktrees and the plan are kept. One repo's services
-per set for now: no deduplication, loopback IPs or hosts entries yet.
+removes the set's network and volumes; worktrees and the plan are kept. Repos that declare
+the same service share one instance of it (see [Shared services](#shared-services)). No
+loopback IPs or hosts entries yet.
 
 ```console
 $ cd ~/code            # holds ./api and ./web, each with a .sandbox/ directory
@@ -25,9 +26,43 @@ set jira-123: sandbox-jira-123 stopped; worktrees kept in /home/me/sandbox/sets/
 ```
 
 `up` renders a per-set `override.yaml` into the set directory and runs
-`docker compose -p sandbox-<set> -f <repo>/.sandbox/compose.yaml -f override.yaml up -d --wait`.
-The repo's own file comes first, so its relative paths resolve from the repo. The override
+`docker compose -p sandbox-<set> -f <api>/.sandbox/compose.yaml -f <web>/... -f override.yaml up -d --wait`,
+with every repo's original file (in repo-name order) before the override. The override
 labels every service, network and declared volume with `sandbox.set=<set>`.
+
+### Shared services
+
+Services are matched **by name only** (never by image): if `api` and `web` both declare
+`mysql`, the set runs one `mysql`. Before anything is created, each repo's compose file is
+normalised on its own with `docker compose config` (so `extends`, short/long syntax and
+list/map `environment` don't cause false conflicts) and same-named services are compared:
+
+- `depends_on`, `labels`, `ports` and `x-sandbox` are ignored (sandbox rewrites ports);
+- a `healthcheck` set by only one repo is kept; two different healthchecks conflict;
+- any other difference fails `up`, before any container starts, with a diff naming both repos:
+
+```console
+$ sandbox jira-123 up --repos api legacy
+error: service 'mysql' is defined differently by api and legacy:
+  --- api: mysql
+  +++ legacy: mysql
+  @@ -6,7 +6,7 @@
+  ...
+  -image: mysql:8.4
+  +image: mysql:8.0
+```
+
+**Multi-version services are not supported in the MVP.** Two repos that need different
+versions of a service (e.g. `mysql84` beside `mysql`, or `mysql:8.0` vs `mysql:8.4` under
+one name) cannot share a set; run them in separate sets.
+
+Compose resolves the relative paths of *every* `-f` file from the first file's directory,
+so for a service that only a later repo declares, the override restates that repo's
+normalised definition (absolute paths, `env_file` inlined into `environment`) with
+Compose's `!override`/`!reset` merge tags (Docker Compose 2.24 or newer). One limitation
+remains: `extends: {file: ...}` is resolved while Compose loads the files, so only the
+first repo (by name) of a multi-repo set may use it; later repos should extend services
+defined in the same file.
 
 Linux and macOS only.
 

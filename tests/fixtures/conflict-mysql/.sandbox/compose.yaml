@@ -1,0 +1,11 @@
+# Dedup fixture: a `mysql` that disagrees with shared-mysql-a (another image version).
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: sandbox
+      MYSQL_DATABASE: app
+    volumes:
+      - data:/var/lib/mysql
+volumes:
+  data: {}
