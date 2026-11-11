@@ -279,6 +279,25 @@ of crashes). Sets are pruned concurrently (at most 4 at a time) and independentl
 that fails is reported, keeps its lease so a rerun retries it, and the rest carry on; the
 command then exits 1.
 
+## Destroy
+
+`sandbox SET destroy` removes a set for good: it prunes it (as above), removes each
+worktree with `git worktree remove` (so the source repos keep no stale worktree metadata),
+and deletes the set directory with its plan and certificate. Every check runs before
+anything is removed, so a refused `destroy` changes nothing:
+
+- a set with anything running is refused, even with `--force` (`sandbox SET down` first);
+- a worktree with uncommitted changes or untracked files is refused, naming the repo and
+  the paths, unless `--force` (which discards them);
+- the `agent/SET` branches are kept by default. `--branches` deletes them too, but refuses
+  a branch holding commits that are on no remote-tracking branch, other branch or tag
+  (named in the error) unless `--force` is also given.
+
+Containers can leave root-owned files in a worktree (a service writing to a bind mount as
+root). On Linux, `destroy` deletes those from a throwaway root container
+(`docker run --rm ubuntu:24.04 ...`, the default agent image's base), so sudo is never
+needed. On macOS Docker Desktop maps container files to the developer, so this never arises.
+
 ## Configuration
 
 `~/.config/sandbox/config.yaml` (override the path with `SANDBOX_CONFIG`). Every key is

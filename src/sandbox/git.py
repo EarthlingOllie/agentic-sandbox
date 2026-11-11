@@ -13,6 +13,8 @@ class WorktreeStatus:
     branch: str | None  # None on a detached HEAD
     modified: bool  # staged or unstaged changes to tracked files (or conflicts)
     untracked: bool  # files git doesn't track and doesn't ignore
+    # The paths behind ``modified`` and ``untracked``, as ``git status`` names them.
+    changes: tuple[str, ...] = ()
 
 
 class Git(Protocol):
@@ -39,6 +41,18 @@ class Git(Protocol):
         """The worktree's branch and whether it has uncommitted or untracked changes, or
         None when ``path`` is not a worktree (e.g. it was deleted)."""
         ...
+
+    async def remove_worktree(self, repo: Path, path: Path, *, force: bool) -> None:
+        """Remove the worktree at ``path`` and its metadata in ``repo``; without ``force``
+        git refuses a worktree with uncommitted or untracked changes."""
+        ...
+
+    async def unpushed_commits(self, repo: Path, branch: str) -> list[str]:
+        """The commits (``<short sha> <subject>``) only ``branch`` holds: on no remote-tracking
+        branch, other local branch or tag, so deleting ``branch`` would lose them."""
+        ...
+
+    async def delete_branch(self, repo: Path, branch: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -118,12 +132,43 @@ class SubprocessGit:
             return None
         branch: str | None = None
         modified = untracked = False
+        changes: list[str] = []
         for line in result.stdout.splitlines():
             if line.startswith("# branch.head "):
                 head = line.removeprefix("# branch.head ")
                 branch = None if head == "(detached)" else head
             elif line.startswith(("1 ", "2 ", "u ")):
                 modified = True
+                # Ordinary (1), renamed (2: "<path>\t<original>") and unmerged (u) entries
+                # carry 8, 9 and 10 space-separated fields before the path.
+                fields = {"1": 8, "2": 9, "u": 10}[line[0]]
+                changes.append(line.split(" ", fields)[-1].split("\t")[0])
             elif line.startswith("? "):
                 untracked = True
-        return WorktreeStatus(branch, modified, untracked)
+                changes.append(line.removeprefix("? "))
+        return WorktreeStatus(branch, modified, untracked, tuple(changes))
+
+    async def remove_worktree(self, repo: Path, path: Path, *, force: bool) -> None:
+        await self._check(repo, "worktree", "remove", *(["--force"] if force else []), str(path))
+
+    async def unpushed_commits(self, repo: Path, branch: str) -> list[str]:
+        ref = f"refs/heads/{branch}"
+        output = await self._check(
+            repo,
+            "log",
+            "--format=%h %s",
+            ref,
+            "--not",
+            # Git versions differ on whether --branches matches --exclude against the full
+            # ref or the name below refs/heads/; excluding both is right on either.
+            f"--exclude={ref}",
+            f"--exclude={branch}",
+            "--branches",
+            "--remotes",
+            "--tags",
+            "--",
+        )
+        return output.splitlines()
+
+    async def delete_branch(self, repo: Path, branch: str) -> None:
+        await self._check(repo, "branch", "--delete", "--force", branch)

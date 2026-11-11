@@ -5,7 +5,9 @@ running: one per service of each project's files, labelled with the set, ``exite
 the test stopped it. Tests add leftovers (orphans) and health through its fields.
 """
 
+import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from sandbox.compose import PROJECT_PREFIX
 from sandbox.docker import Container
@@ -19,6 +21,8 @@ class FakeDocker:
     extra: list[Container] = field(default_factory=list[Container])
     # (set, service) -> health status reported for that service's running container
     health: dict[tuple[str, str], str] = field(default_factory=dict[tuple[str, str], str])
+    # The directories `empty_as_root` emptied, in call order.
+    emptied: list[Path] = field(default_factory=list[Path])
 
     async def set_containers(self) -> list[Container]:
         found: list[Container] = []
@@ -33,3 +37,11 @@ class FakeDocker:
                 health = self.health.get((set_name, service)) if state == "running" else None
                 found.append(Container(set_name, service, state, health))
         return [*found, *self.extra]
+
+    async def empty_as_root(self, path: Path) -> None:
+        self.emptied.append(path)
+        for child in path.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()

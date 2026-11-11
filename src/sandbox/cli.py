@@ -18,6 +18,7 @@ from typer.core import TyperGroup
 
 from sandbox.bindings import format_bindings
 from sandbox.commands.claude import claude
+from sandbox.commands.destroy import destroy
 from sandbox.commands.down import down
 from sandbox.commands.prune import prune
 from sandbox.commands.save import save
@@ -182,6 +183,7 @@ app.command()(sh)
 app.command()(claude)
 app.command()(status)
 app.command()(prune)
+app.command()(destroy)
 
 
 def main() -> None:

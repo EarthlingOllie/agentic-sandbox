@@ -9,12 +9,17 @@ import asyncio
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
 from sandbox.compose import SET_LABEL
 from sandbox.errors import SandboxError
 
 SERVICE_LABEL: Final = "com.docker.compose.service"
+# The throwaway container that deletes root-owned files runs this image: the default agent
+# image is built from it, so it is already on any machine that has run a set.
+CLEANUP_IMAGE: Final = "ubuntu:24.04"
+_CLEANUP_MOUNT: Final = "/sandbox-cleanup"
 
 
 class DockerError(SandboxError):
@@ -32,6 +37,11 @@ class Container:
 class Docker(Protocol):
     async def set_containers(self) -> list[Container]:
         """Every container (running or not) labelled with a set."""
+        ...
+
+    async def empty_as_root(self, path: Path) -> None:
+        """Delete everything inside the directory ``path`` (keeping ``path`` itself) from a
+        throwaway root container, for files containers left behind owned by root."""
         ...
 
 
@@ -74,6 +84,16 @@ class SubprocessDocker:
                 raise DockerError(f"docker container inspect printed invalid JSON: {exc}") from exc
             return sorted(map(_container, documents), key=lambda c: (c.set_name, c.service))
         return []
+
+    async def empty_as_root(self, path: Path) -> None:
+        await self._check(
+            [
+                "run", "--rm", "--pull", "missing", "--network", "none",
+                "--user", "0:0", "--entrypoint", "find",
+                "--volume", f"{path.resolve()}:{_CLEANUP_MOUNT}",
+                CLEANUP_IMAGE, _CLEANUP_MOUNT, "-mindepth", "1", "-delete",
+            ]
+        )  # fmt: skip
 
 
 def _container(document: dict[str, Any]) -> Container:

@@ -1,10 +1,15 @@
 """In-memory stand-ins for external tools, used by unit tests behind the CLI seam."""
 
 import asyncio
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from sandbox.git import GitCommandError, WorktreeStatus
+
+# A file by this name stands for root-owned files a container left in a directory: FakeGit
+# can't delete a worktree holding one (FakeDocker.empty_as_root can).
+ROOT_OWNED_MARKER = ".root-owned"
 
 
 @dataclass
@@ -13,6 +18,8 @@ class FakeRepo:
     branches: set[str] = field(default_factory=lambda: {"main"})
     # branch -> worktree path, for branches checked out in a linked worktree
     checked_out: dict[str, Path] = field(default_factory=dict[str, Path])
+    # branch -> the commits (``<sha> <subject>``) only that branch holds
+    unpushed: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
 
 
 @dataclass
@@ -20,6 +27,7 @@ class FakeWorktree:
     branch: str | None
     modified: bool = False
     untracked: bool = False
+    changes: tuple[str, ...] = ()
 
 
 class FakeGit:
@@ -101,4 +109,32 @@ class FakeGit:
         worktree = self.worktrees.get(path.resolve())
         if worktree is None or not (path / ".git").exists():
             return None
-        return WorktreeStatus(worktree.branch, worktree.modified, worktree.untracked)
+        return WorktreeStatus(
+            worktree.branch, worktree.modified, worktree.untracked, worktree.changes
+        )
+
+    async def remove_worktree(self, repo: Path, path: Path, *, force: bool) -> None:
+        state = self.repo(repo)
+        worktree = self.worktrees.get(path.resolve())
+        if worktree is None or not (path / ".git").exists():
+            raise GitCommandError(f"fatal: '{path}' is not a working tree")
+        if not force and (worktree.modified or worktree.untracked):
+            raise GitCommandError(
+                f"fatal: '{path}' contains modified or untracked files, use --force to delete it"
+            )
+        if any(found.name == ROOT_OWNED_MARKER for found in path.rglob("*")):
+            raise GitCommandError(f"error: failed to delete '{path}': Permission denied")
+        shutil.rmtree(path)
+        del self.worktrees[path.resolve()]
+        state.checked_out = {b: p for b, p in state.checked_out.items() if p != path}
+
+    async def unpushed_commits(self, repo: Path, branch: str) -> list[str]:
+        return list(self.repo(repo).unpushed.get(branch, []))
+
+    async def delete_branch(self, repo: Path, branch: str) -> None:
+        state = self.repo(repo)
+        if branch not in state.branches:
+            raise GitCommandError(f"error: branch '{branch}' not found")
+        if branch in state.checked_out:
+            raise GitCommandError(f"error: cannot delete branch '{branch}' used by worktree")
+        state.branches.discard(branch)

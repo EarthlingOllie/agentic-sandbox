@@ -4,11 +4,11 @@
 
 **Blocked by:** 16 (prune)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `destroy` refuses on a running set
-- [ ] `destroy` refuses if any worktree has uncommitted or untracked changes, naming them, unless `--force`
-- [ ] `agent/<set>` branches are kept by default; `--branches` deletes them but refuses on unpushed commits unless `--force` is also given
-- [ ] Worktrees are removed via git so the source repos' worktree metadata stays clean
-- [ ] On Linux, removal that hits root-owned files falls back to deleting them from a throwaway container started with the `docker` CLI (no SDK); sudo is never required
-- [ ] Integration tests cover each refusal and the forced paths against real git
+- [x] `destroy` refuses on a running set
+- [x] `destroy` refuses if any worktree has uncommitted or untracked changes, naming them, unless `--force`
+- [x] `agent/<set>` branches are kept by default; `--branches` deletes them but refuses on unpushed commits unless `--force` is also given
+- [x] Worktrees are removed via git so the source repos' worktree metadata stays clean
+- [x] On Linux, removal that hits root-owned files falls back to deleting them from a throwaway container started with the `docker` CLI (no SDK); sudo is never required
+- [x] Integration tests cover each refusal and the forced paths against real git
