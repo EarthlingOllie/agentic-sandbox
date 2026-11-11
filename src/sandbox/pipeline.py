@@ -4,6 +4,8 @@
 
 1. **Validation steps** check everything that can fail cheaply. They create nothing, so a
    failure here needs no rollback; every one of them finishes before any container starts.
+   The one exception is the set's IP lease (``sandbox.bindings``): ``up`` gives back a lease
+   it created whenever it fails before the set's plan exists.
 2. **Provision steps** create things in order. If one fails, or ``up`` is cancelled (Ctrl-C),
    the steps that started are rolled back in reverse order. Rollback is shielded from
    cancellation, and Ctrl-C (SIGINT) is ignored while it runs, so a second Ctrl-C cannot
@@ -80,6 +82,8 @@ class UpContext:
     alias_blocks: int | None = None
     # The set's loopback IP lease (None when it has no services).
     lease: SetLease | None = None
+    # True when this `up` created the lease (the set had none before).
+    lease_created: bool = False
     # The repos' HTTPS web apps, and the mkcert CA certificate (None without a web app).
     web_apps: list[WebApp] = field(default_factory=list[WebApp])
     root_ca: Path | None = None

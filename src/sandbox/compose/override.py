@@ -7,6 +7,7 @@ the repo while sandbox's additions win where they overlap. A later concern adds 
 under ``sandbox.compose`` and one line to ``FRAGMENTS``.
 """
 
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address
@@ -103,7 +104,12 @@ def write_override(ctx: OverrideContext) -> Path:
     """Render the override into the set directory (rewritten on every ``up``)."""
     path = ctx.set_dir / OVERRIDE_FILENAME
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(dump_yaml(render(ctx)), encoding="utf-8")
+    # The agent mounts the set directory read-write: never follow what it may have planted
+    # at the temporary name (a symlink would make this write any file the user owns).
+    temporary.unlink(missing_ok=True)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        file.write(dump_yaml(render(ctx)))
     temporary.replace(path)
     return path
 

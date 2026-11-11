@@ -40,3 +40,25 @@ async def file_lock(path: Path) -> AsyncGenerator[None]:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
         os.close(fd)
+
+
+@asynccontextmanager
+async def try_file_lock(path: Path) -> AsyncGenerator[bool]:
+    """Try once for an exclusive ``flock`` on ``path``: yields True holding it, or False
+    (holding nothing) when another process has it."""
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)

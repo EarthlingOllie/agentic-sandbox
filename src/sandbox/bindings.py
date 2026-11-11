@@ -1,14 +1,19 @@
 """A set's bindings: every hostname, its leased loopback IP and its native ports.
 
 :func:`lease_ips` is the ``up`` validation step that leases them (``sandbox.leases``). It is
-the one validation step that writes host state, because a lease is sticky and idempotent:
-it is never rolled back, and only ``prune`` releases it. Running it before anything starts
-means an exhausted pool fails ``up`` cleanly, and the no-op path can still print bindings.
+the one validation step that writes host state. Running it before anything starts means an
+exhausted pool fails ``up`` cleanly, and the no-op path can still print bindings.
+
+A lease is sticky: once the set has a plan, only ``prune`` releases it. Until then the set
+looks orphaned, so ``up`` holds the set's :func:`up_lock_path` throughout (bare ``prune``
+skips a set whose lock is held) and releases a lease it created itself if it fails before
+the plan exists (see ``Provisioner.up``).
 """
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Address
+from pathlib import Path
 
 from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.network import ContainerPort, container_ports, hostname
@@ -35,12 +40,21 @@ def lease_store(config: Config, max_blocks: int | None = None) -> LeaseStore:
     )
 
 
+def up_lock_path(config: Config, set_name: str) -> Path:
+    """Held by ``up`` of ``set_name`` while it runs, so bare ``prune`` leaves the set alone."""
+    return config.lock_dir / f"up-{set_name}.lock"
+
+
 async def lease_ips(ctx: UpContext) -> None:
     """Lease the set's /24 and one IP per service hostname (kept if already leased)."""
     if not ctx.graph.services:
         return
     hostnames = [hostname(name, ctx.set_name) for name in ctx.graph.names()]
-    ctx.lease = await lease_store(ctx.config, ctx.alias_blocks).lease(ctx.set_name, hostnames)
+    store = lease_store(ctx.config, ctx.alias_blocks)
+    # Under the set's up lock, so no other process creates this set's lease meanwhile.
+    existed = store.read(ctx.set_name) is not None
+    ctx.lease = await store.lease(ctx.set_name, hostnames)
+    ctx.lease_created = not existed
 
 
 def service_ips(

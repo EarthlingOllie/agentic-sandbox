@@ -220,6 +220,15 @@ def _bind(source: Path, target: str) -> dict[str, Any]:
     return {"type": "bind", "source": str(source), "target": target}
 
 
+def _git_dir_mounts(git_dir: Path) -> list[dict[str, Any]]:
+    """A source repo's ``.git``, read-write so the agent can commit, but with its config
+    read-only: host-side git reads that config, and a setting the agent chose (a filter or
+    ``core.fsmonitor``) would run code on the host. Hooks and ``commondir`` are handled by
+    :class:`sandbox.git.SubprocessGit`, which never trusts them."""
+    config = git_dir / "config"
+    return [_bind(git_dir, str(git_dir)), read_only_bind(config, str(config))]
+
+
 def _guarantees(
     set_name: str, set_dir: Path, sources: Mapping[str, Path], root_ca: Path | None = None
 ) -> dict[str, Any]:
@@ -234,7 +243,7 @@ def _guarantees(
         # Read-only: the plan pins the agent override, so an agent that could edit it
         # would choose its own settings at the developer's next `up`.
         {**_bind(set_dir / PLAN_FILENAME, plan_target), "read_only": True},
-        *(_bind(sources[n] / ".git", str(sources[n] / ".git")) for n in sorted(sources)),
+        *(mount for n in sorted(sources) for mount in _git_dir_mounts(sources[n] / ".git")),
         _bind(host_claude_dir(), AGENT_CLAUDE_DIR),
     ]
     if root_ca is not None:

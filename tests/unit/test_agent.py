@@ -81,12 +81,20 @@ def test_set_dir_and_each_repos_git_dir_are_mounted_but_not_the_working_tree(
         "/workspace/jira-123": str(env.set_dir("jira-123")),
         "/workspace/jira-123/sandbox.yaml": str(env.set_dir("jira-123") / "sandbox.yaml"),
         f"{api}/.git": f"{api}/.git",
+        f"{api}/.git/config": f"{api}/.git/config",
         f"{web}/.git": f"{web}/.git",
+        f"{web}/.git/config": f"{web}/.git/config",
         "/home/agent/.claude": str(Path.home() / ".claude"),
     }
-    # Only the plan is read-only: it pins the agent override (see test_agent_override).
+    # The plan pins the agent override (see test_agent_override); a repo's config is what
+    # host-side git reads, so an agent that could edit it (a filter, say) would run code on
+    # the host at the next `status` or `destroy`.
     read_only = [volume["target"] for volume in agent["volumes"] if volume.get("read_only")]
-    assert read_only == ["/workspace/jira-123/sandbox.yaml"]
+    assert read_only == [
+        "/workspace/jira-123/sandbox.yaml",
+        f"{api}/.git/config",
+        f"{web}/.git/config",
+    ]
 
 
 def test_agent_runs_as_the_host_uid_and_gid(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,3 +133,23 @@ def test_repo_service_named_agent_is_rejected(env: Env) -> None:
     assert "api:" in result.stderr
     assert "'agent' is reserved" in result.stderr
     assert compose.calls == []
+
+
+def test_up_does_not_follow_a_symlink_the_agent_planted_at_the_override_temp_file(
+    env: Env, tmp_path: Path
+) -> None:
+    # The agent mounts the set directory read-write, so it can plant anything there.
+    up(env, "web")
+    victim = tmp_path / "authorized_keys"
+    victim.write_text("ssh-ed25519 AAAA developer\n")
+    set_dir = env.set_dir("jira-123")
+    (set_dir / ".override.yaml.tmp").symlink_to(victim)
+
+    git = FakeGit()
+    git.add_repo(env.cwd / "web")
+    result = invoke(["jira-123", "up"], git, FakeCompose())
+
+    assert result.exit_code == 0, result.output
+    assert victim.read_text() == "ssh-ed25519 AAAA developer\n"
+    assert not (set_dir / "override.yaml").is_symlink()
+    assert "agent" in yaml.safe_load((set_dir / "override.yaml").read_text())["services"]

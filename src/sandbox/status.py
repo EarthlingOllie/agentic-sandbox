@@ -153,7 +153,10 @@ class StatusReader:
         set_dir = self._set_dir(set_name)
         names = sorted(plan.repos)
         async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(self._git.worktree_status(set_dir / n)) for n in names]
+            tasks = [
+                group.create_task(self._git.worktree_status(plan.repos[n].source, set_dir / n))
+                for n in names
+            ]
         repos: list[RepoStatus] = []
         for name, task in zip(names, tasks, strict=True):
             found = task.result()

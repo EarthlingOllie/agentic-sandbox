@@ -14,7 +14,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Final
 
-from sandbox.bindings import lease_store
+from sandbox.bindings import lease_store, up_lock_path
 from sandbox.compose import project_name
 from sandbox.compose.cli import Compose
 from sandbox.config import Config
@@ -22,6 +22,7 @@ from sandbox.docker import Docker
 from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.hosts import HostsWriter, hosts_writer
+from sandbox.locking import try_file_lock
 from sandbox.models.status import SetStateName, SetSummary
 from sandbox.names import validate_set_name
 from sandbox.plan import plan_path
@@ -75,7 +76,10 @@ class Pruner:
             raise SandboxError(
                 f"set {set_name!r} is {summary.state}; stop it first with: sandbox {set_name} down"
             )
-        return await self._clear(set_name)
+        async with try_file_lock(up_lock_path(self._config, set_name)) as held:
+            if not held:
+                raise SandboxError(f"set {set_name!r} has an `up` in progress; prune it after")
+            return await self._clear(set_name)
 
     async def prune_orphans(self) -> PruneReport:
         """Prune every orphaned set, concurrently under a bound and independently."""
@@ -83,8 +87,12 @@ class Pruner:
         orphans = [s.name for s in listing.sets if s.state is SetStateName.ORPHANED]
         limit = asyncio.Semaphore(MAX_CONCURRENT)
 
-        async def one(set_name: str) -> Pruned | PruneFailure:
-            async with limit:
+        async def one(set_name: str) -> Pruned | PruneFailure | None:
+            async with limit, try_file_lock(up_lock_path(self._config, set_name)) as held:
+                # An `up` of the set is running (a new set has a lease before its plan), or
+                # one finished since the listing and wrote the plan: not an orphan.
+                if not held or plan_path(self._config.sets_root / set_name).exists():
+                    return None
                 try:
                     return await self._clear(set_name)
                 except SandboxError as exc:

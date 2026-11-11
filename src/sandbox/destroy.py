@@ -133,8 +133,8 @@ class Destroyer:
 
     async def _refuse_dirty(self, set_name: str, worktrees: dict[str, tuple[Path, Path]]) -> None:
         problems: list[str] = []
-        for name, (_, path) in worktrees.items():
-            status = await self._git.worktree_status(path)
+        for name, (source, path) in worktrees.items():
+            status = await self._git.worktree_status(source, path)
             if status is None or not (status.modified or status.untracked):
                 continue
             kinds = [

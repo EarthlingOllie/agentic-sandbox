@@ -1,6 +1,7 @@
 """The git operations sandbox needs, behind a small protocol so unit tests can use a fake."""
 
 import asyncio
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -37,9 +38,10 @@ class Git(Protocol):
         """
         ...
 
-    async def worktree_status(self, path: Path) -> WorktreeStatus | None:
-        """The worktree's branch and whether it has uncommitted or untracked changes, or
-        None when ``path`` is not a worktree (e.g. it was deleted)."""
+    async def worktree_status(self, repo: Path, path: Path) -> WorktreeStatus | None:
+        """The branch of ``repo``'s worktree at ``path`` and whether it has uncommitted or
+        untracked changes, or None when ``path`` is not one of ``repo``'s worktrees (e.g. it
+        was deleted)."""
         ...
 
     async def remove_worktree(self, repo: Path, path: Path, *, force: bool) -> None:
@@ -66,16 +68,70 @@ class GitCommandError(SandboxError):
     pass
 
 
+# Settings in a repo's config that would make host-side git run a program. The agent can
+# write a source's ``.git`` (it is mounted read-write), so these are pinned on every call;
+# filters and the rest of ``.git/config`` are covered by the agent seeing it read-only.
+_NO_AGENT_CODE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+
+
+def _worktree_git_dir(repo: Path, path: Path) -> Path | None:
+    """The git dir ``path``'s ``.git`` file names, if it is one of ``repo``'s worktrees.
+
+    The agent can rewrite that file, so its target is only trusted when it is a direct
+    child of ``repo``'s own ``.git/worktrees``.
+    """
+    link = path / ".git"
+    if link.is_symlink() or not link.is_file():
+        return None
+    try:
+        text = link.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not text.startswith("gitdir: "):
+        return None
+    target = Path(os.path.normpath(path / text.removeprefix("gitdir: ")))
+    worktrees = (repo / ".git" / "worktrees").resolve()
+    if target.parent.resolve() != worktrees or target.name in ("", ".", ".."):
+        return None
+    return worktrees / target.name
+
+
 class SubprocessGit:
-    """Runs the real ``git`` binary."""
+    """Runs the real ``git`` binary, never trusting what the agent can write.
+
+    Every call names its git dir and common dir explicitly (so a ``commondir`` or ``.git``
+    file the agent planted can't point git at config of its choosing) and pins off hooks
+    and fsmonitor.
+    """
 
     async def _run(self, repo: Path, *args: str) -> GitResult:
+        """Run git on the source repo ``repo``."""
+        git_dir = repo / ".git"
+        if not git_dir.is_dir():
+            # Not a repository (or a linked worktree, which sandbox never uses as a source).
+            return await self._exec(repo, {}, *args)
+        if (git_dir / "commondir").exists():
+            # Only a linked worktree's git dir has one; git would take refs from wherever it
+            # points, so a source holding one was tampered with.
+            return GitResult(128, "", f"refusing {git_dir}: it holds a commondir file")
+        return await self._exec(
+            repo, {"GIT_DIR": str(git_dir), "GIT_COMMON_DIR": str(git_dir)}, *args
+        )
+
+    async def _exec(self, cwd: Path, env: dict[str, str], *args: str) -> GitResult:
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE")
+        }
         try:
             process = await asyncio.create_subprocess_exec(
                 "git",
                 "-C",
-                str(repo),
+                str(cwd),
+                *_NO_AGENT_CODE,
                 *args,
+                env={**environment, **env},
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -124,10 +180,18 @@ class SubprocessGit:
         else:
             await self._check(repo, "worktree", "add", "-b", branch, str(path), base)
 
-    async def worktree_status(self, path: Path) -> WorktreeStatus | None:
+    async def worktree_status(self, repo: Path, path: Path) -> WorktreeStatus | None:
         if not path.is_dir():
             return None
-        result = await self._run(path, "status", "--porcelain=v2", "--branch")
+        git_dir = _worktree_git_dir(repo, path)
+        if git_dir is None:
+            return None
+        env = {
+            "GIT_DIR": str(git_dir),
+            "GIT_COMMON_DIR": str(repo / ".git"),
+            "GIT_WORK_TREE": str(path),
+        }
+        result = await self._exec(path, env, "status", "--porcelain=v2", "--branch")
         if result.returncode != 0:
             return None
         branch: str | None = None

@@ -27,7 +27,14 @@ from typing import Any, Final
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.agent_override import check_agent_override
-from sandbox.bindings import Binding, bindings, lease_ips, service_ips
+from sandbox.bindings import (
+    Binding,
+    bindings,
+    lease_ips,
+    lease_store,
+    service_ips,
+    up_lock_path,
+)
 from sandbox.certs import Mkcert, SubprocessMkcert
 from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.cli import Compose
@@ -40,8 +47,9 @@ from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.hooks import check_hooks, run_hooks
 from sandbox.hosts import HostsWriter, hosts_writer, remove_hosts_block, write_hosts_block
+from sandbox.locking import file_lock
 from sandbox.names import agent_branch, validate_repo_name, validate_set_name
-from sandbox.pipeline import Step, UpContext, Warn, fail_fast, provision, validate
+from sandbox.pipeline import Step, UpContext, Warn, fail_fast, provision, shielded, validate
 from sandbox.plan import (
     SetPlan,
     SetRepo,
@@ -299,9 +307,18 @@ class Provisioner:
             mkcert=self._mkcert,
             host=self._host,
         )
-        await validate(VALIDATION_STEPS, ctx)
-        if ctx.action is not UpAction.NOOP:
-            await provision(PROVISION_STEPS, ctx)
+        # Held throughout, so bare `prune` leaves this set's lease alone while it has none of
+        # the plan that would show the lease is in use.
+        async with file_lock(up_lock_path(self._config, set_name)):
+            try:
+                await validate(VALIDATION_STEPS, ctx)
+                if ctx.action is not UpAction.NOOP:
+                    await provision(PROVISION_STEPS, ctx)
+            except BaseException:
+                if ctx.lease_created and not plan_file.exists():
+                    # Nothing else knows this set yet: give back what this `up` leased.
+                    await shielded(lease_store(self._config).release(set_name))
+                raise
         return UpResult(
             set_name,
             set_dir,

@@ -105,7 +105,7 @@ class FakeGit:
         finally:
             self.active_adds[key] -= 1
 
-    async def worktree_status(self, path: Path) -> WorktreeStatus | None:
+    async def worktree_status(self, repo: Path, path: Path) -> WorktreeStatus | None:
         worktree = self.worktrees.get(path.resolve())
         if worktree is None or not (path / ".git").exists():
             return None

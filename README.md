@@ -153,9 +153,13 @@ instead; an unknown name fails and points at `--repo`.
   it never runs as root.
 - **Hardening**: `cap_drop: [ALL]`, `no-new-privileges`, and the Docker socket is never
   mounted.
-- **Mounts** (all read-write binds): the set directory at `/workspace/<set>/`; each source
-  repo's `.git` at its exact host path, because a worktree's `.git` file points there (so
-  the agent can see every branch of the repo); the host's `~/.claude/` at
+- **Mounts** (read-write binds unless noted): the set directory at `/workspace/<set>/`
+  (its `sandbox.yaml` read-only); each source repo's `.git` at its exact host path,
+  because a worktree's `.git` file points there (so the agent can see every branch of the
+  repo and commit), with `.git/config` read-only: sandbox runs git on the host against
+  that repo, so a setting the agent wrote there (a filter, `core.fsmonitor`) would run on
+  the host. The agent can't change repo config (`git config`, `git push -u`); host-side
+  git also ignores hooks, fsmonitor and any `.git` or `commondir` file the agent planted; the host's `~/.claude/` at
   `/home/agent/.claude` with `CLAUDE_CONFIG_DIR=/home/agent/.claude`, so all sets share one
   login. Your main working trees and `~/.claude.json` are never mounted. In a set with a
   web app, the mkcert CA's `rootCA.pem` is also mounted read-only (see above).
@@ -293,11 +297,13 @@ one).
 
 `sandbox SET prune` removes a stopped set's containers, network, volumes and hosts block,
 and releases its IP lease back to the pool; the next `up` leases it a fresh block. It
-refuses while any of the set's services run (`sandbox SET down` first). The set directory,
-plan and worktrees are never touched.
+refuses while any of the set's services run (`sandbox SET down` first), or while an `up`
+of the set is in progress. The set directory, plan and worktrees are never touched.
 
 Bare `sandbox prune` does the same for every **orphaned** set `status` reports (leftovers
-of crashes). Sets are pruned concurrently (at most 4 at a time) and independently: a set
+of crashes). A set whose `up` is still in progress is skipped: a brand-new set holds its
+lease before its plan exists, and a first `up` that fails before writing the plan gives
+that lease back itself. Sets are pruned concurrently (at most 4 at a time) and independently: a set
 that fails is reported, keeps its lease so a rerun retries it, and the rest carry on; the
 command then exits 1.
 
