@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from sandbox.compose import project_name
+from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import resolve as resolve_services
 from sandbox.compose.override import OverrideContext, write_override
@@ -108,10 +108,12 @@ async def _dedup_services(ctx: UpContext) -> None:
 async def _observe_state(ctx: UpContext) -> None:
     """Read the set's state (last, so it reflects Docker as close to acting as possible)."""
     running: set[str] = set()
-    if ctx.plan_on_disk and ctx.services:
+    if ctx.plan_on_disk:
         running = await ctx.compose.running_services(ctx.project)
     ctx.running = running
-    ctx.state = observe(has_plan=ctx.plan_on_disk, expected=ctx.services, running=running)
+    # Every set runs the agent next to its repos' services.
+    expected = [*ctx.services, AGENT_SERVICE]
+    ctx.state = observe(has_plan=ctx.plan_on_disk, expected=expected, running=running)
     ctx.action = decide(ctx.state, recreate=ctx.recreate)
 
 
@@ -159,18 +161,16 @@ async def _stop_for_recreate(ctx: UpContext) -> None:
 
 
 async def _compose_up(ctx: UpContext) -> None:
-    if not ctx.services:
-        return
-    # Every repo's own file, then the override: one instance per shared service.
+    # Every repo's own file, then the override: one instance per shared service, plus the
+    # agent every set runs (so Compose runs even when no repo declares services).
     override = write_override(
-        OverrideContext(ctx.set_name, ctx.set_dir, ctx.repo_composes, ctx.graph)
+        OverrideContext(ctx.set_name, ctx.set_dir, ctx.repo_composes, ctx.graph, ctx.plan.sources())
     )
     await ctx.compose.up(ctx.project, [*(rc.file for rc in ctx.repo_composes), override])
 
 
 async def _compose_down(ctx: UpContext) -> None:
-    if ctx.services:
-        await ctx.compose.down(ctx.project)
+    await ctx.compose.down(ctx.project)
 
 
 VALIDATION_STEPS: Final[list[Step]] = [

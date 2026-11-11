@@ -51,6 +51,11 @@ class FakeCompose:
     stopped_services: dict[str, set[str]] = field(default_factory=dict[str, set[str]])
     # When set, `config` fails with this message, as it does for an invalid compose file.
     config_error: str | None = None
+    # (project, service, command, workdir) for each `exec`, and the status it returns.
+    execs: list[tuple[str, str, list[str], str | None]] = field(
+        default_factory=list[tuple[str, str, list[str], str | None]]
+    )
+    exec_status: int = 0
 
     async def up(self, project: str, files: list[Path]) -> None:
         self.calls.append(("up", project))
@@ -90,3 +95,9 @@ class FakeCompose:
             for service, spec in services.items():
                 document.setdefault("services", {}).setdefault(service, {}).update(spec)
         return document
+
+    async def exec(
+        self, project: str, service: str, command: list[str], workdir: str | None
+    ) -> int:
+        self.execs.append((project, service, list(command), workdir))
+        return self.exec_status

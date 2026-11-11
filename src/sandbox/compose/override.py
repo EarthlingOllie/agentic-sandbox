@@ -7,12 +7,13 @@ the repo while sandbox's additions win where they overlap. A later concern adds 
 under ``sandbox.compose`` and one line to ``FRAGMENTS``.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
 from sandbox.compose import project_name
+from sandbox.compose.agent import agent_fragment
 from sandbox.compose.dedup import ServiceGraph, relocation_fragment
 from sandbox.compose.services import RepoCompose, set_labels_fragment
 from sandbox.yamlio import dump_yaml
@@ -27,6 +28,8 @@ class OverrideContext:
     repos: list[RepoCompose]
     # The deduplicated services of all repos (see sandbox.compose.dedup).
     graph: ServiceGraph = field(default_factory=lambda: ServiceGraph({}))
+    # Every repo in the plan (including worktree-only ones) -> its absolute source.
+    sources: Mapping[str, Path] = field(default_factory=dict[str, Path])
 
 
 Fragment = Callable[[OverrideContext], dict[str, Any]]
@@ -44,10 +47,15 @@ def _relocate(ctx: OverrideContext) -> dict[str, Any]:
     return relocation_fragment(ctx.graph, ctx.repos)
 
 
+def _agent(ctx: OverrideContext) -> dict[str, Any]:
+    return agent_fragment(ctx.set_name, ctx.set_dir, ctx.sources)
+
+
 FRAGMENTS: Final[list[Fragment]] = [
     _project,
     _set_labels,
     _relocate,
+    _agent,
 ]
 
 

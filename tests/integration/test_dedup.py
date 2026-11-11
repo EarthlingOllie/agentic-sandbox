@@ -89,7 +89,8 @@ def test_multi_repo_up_shares_one_mysql(env: Env, cleanup: None) -> None:
     assert result.exit_code == 0, result.output
     names = docker("ps", "--filter", f"label=com.docker.compose.project={PROJECT}",
                    "--format", "{{.Names}}").split()  # fmt: skip
-    assert sorted(names) == [f"{PROJECT}-mysql-1", f"{PROJECT}-toolbox-1"]
+    # One mysql for both repos, beside web's toolbox and the set's agent.
+    assert sorted(names) == [f"{PROJECT}-agent-1", f"{PROJECT}-mysql-1", f"{PROJECT}-toolbox-1"]
     # The healthcheck only api declares was kept, and `up --wait` waited for it.
     health = docker("inspect", "-f", "{{.State.Health.Status}}", f"{PROJECT}-mysql-1")
     assert health == "healthy"

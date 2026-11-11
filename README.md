@@ -21,6 +21,9 @@ set jira-123: /home/me/sandbox/sets/jira-123
   api: /home/me/sandbox/sets/jira-123/api [agent/jira-123, created from main]
   web: /home/me/sandbox/sets/jira-123/web [agent/jira-123, created from release/2.4]
   services: mysql healthy [sandbox-jira-123]
+  agent: running [sandbox-jira-123]; open a shell: sandbox jira-123 sh
+$ sandbox jira-123 sh --repo api   # a shell in the agent, in /workspace/jira-123/api
+$ sandbox jira-123 sh mysql        # a shell in the mysql service container
 $ sandbox jira-123 down
 set jira-123: sandbox-jira-123 stopped; worktrees kept in /home/me/sandbox/sets/jira-123
 ```
@@ -63,6 +66,29 @@ Compose's `!override`/`!reset` merge tags (Docker Compose 2.24 or newer). One li
 remains: `extends: {file: ...}` is resolved while Compose loads the files, so only the
 first repo (by name) of a multi-repo set may use it; later repos should extend services
 defined in the same file.
+
+### The agent container
+
+Every set also runs a hardened `agent` service (a repo may not declare a service of that
+name). `sandbox SET sh` opens a shell in it at `/workspace/<set>/`; `--repo NAME` starts in
+that repo's worktree. `sandbox SET sh SERVICE` opens a shell in one of the set's services
+instead; an unknown name fails and points at `--repo`.
+
+- **Image**: the bundled default (`src/sandbox/images/agent/`: Ubuntu 24.04 with `sh`,
+  `git` and `claude` on PATH). Compose builds it on the first `up` as
+  `sandbox-agent:<content hash>` and never pulls it from a registry. It works under any
+  UID with a writable `HOME` (`/home/agent`): its entrypoint adds a passwd/group entry for
+  the UID:GID it runs as.
+- **User**: your host UID:GID, so files the agent writes in the worktrees and in
+  `~/.claude/` stay yours. If sandbox itself runs as root, the agent runs as `1000:1000`;
+  it never runs as root.
+- **Hardening**: `cap_drop: [ALL]`, `no-new-privileges`, and the Docker socket is never
+  mounted.
+- **Mounts** (all read-write binds): the set directory at `/workspace/<set>/`; each source
+  repo's `.git` at its exact host path, because a worktree's `.git` file points there (so
+  the agent can see every branch of the repo); the host's `~/.claude/` at
+  `/home/agent/.claude` with `CLAUDE_CONFIG_DIR=/home/agent/.claude`, so all sets share one
+  login. Your main working trees and `~/.claude.json` are never mounted.
 
 Linux and macOS only.
 

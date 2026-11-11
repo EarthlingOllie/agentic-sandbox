@@ -49,6 +49,8 @@ def test_override_labels_every_resource_with_the_set_name(env: Env) -> None:
 
     override = yaml.safe_load((env.set_dir("jira-123") / "override.yaml").read_text())
     label = {"sandbox.set": "jira-123"}
+    # The agent service (tested in test_agent.py) carries the label too.
+    assert override["services"].pop("agent")["labels"] == label
     assert override == {
         "name": "sandbox-jira-123",
         "services": {"mysql": {"labels": label}},
@@ -66,16 +68,20 @@ def test_repo_without_compose_file_still_provisions_its_worktree(env: Env) -> No
 
     assert result.exit_code == 0, result.output
     assert (env.set_dir("jira-123") / "api" / ".git").is_file()
-    assert compose.calls == []
-    assert not (env.set_dir("jira-123") / "override.yaml").exists()
+    # Only the set's own override (the agent) goes to Compose.
+    assert compose.running == {"sandbox-jira-123": [env.set_dir("jira-123") / "override.yaml"]}
     assert "services: none" in result.stdout
 
 
 def test_compose_file_without_services_is_worktree_only(env: Env) -> None:
     git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git, "api", "services: {}\n")
-    assert invoke(["jira-123", "up", "--repos", "api"], git, compose).exit_code == 0
-    assert compose.calls == []
+    api = make_repo(env, git, "api", "services: {}\n")
+
+    result = invoke(["jira-123", "up", "--repos", "api"], git, compose)
+
+    assert result.exit_code == 0, result.output
+    assert "services: none" in result.stdout
+    assert compose.running["sandbox-jira-123"][0] == api / ".sandbox" / "compose.yaml"
 
 
 def test_unhealthy_service_fails_up(env: Env) -> None:

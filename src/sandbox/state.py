@@ -8,7 +8,8 @@ plan, not every service running    resume         resume
 plan, every service running        no-op          recreate
 =================================  =============  ===============
 
-A worktree-only set (no services) is never "running": resuming it is already a no-op.
+"Every service" includes the agent container every set runs, so a set whose repos declare
+no services is running once its agent is.
 """
 
 from collections.abc import Iterable, Set

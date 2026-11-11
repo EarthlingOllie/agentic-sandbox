@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from sandbox.compose import SET_LABEL
+from sandbox.compose import AGENT_SERVICE, SET_LABEL
 from sandbox.errors import SandboxError
 from sandbox.yamlio import read_yaml
 
@@ -42,10 +42,16 @@ def load_repo_compose(repo: str, source: Path) -> RepoCompose | None:
     if not isinstance(data, dict):
         raise SandboxError(f"{repo}: {path}: expected a mapping at the top level")
     document = _string_keys(data)  # pyright: ignore[reportUnknownArgumentType]
+    services = tuple(_section(repo, path, document, "services"))
+    if AGENT_SERVICE in services:
+        raise SandboxError(
+            f"{repo}: {path}: service name {AGENT_SERVICE!r} is reserved for the set's "
+            "agent container; rename the service"
+        )
     return RepoCompose(
         repo=repo,
         file=path,
-        services=tuple(_section(repo, path, document, "services")),
+        services=services,
         networks=tuple(_owned(repo, path, document, "networks")),
         volumes=tuple(_owned(repo, path, document, "volumes")),
     )

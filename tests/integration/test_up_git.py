@@ -89,7 +89,16 @@ def test_concurrent_up_processes_on_the_same_repo(
         )
         for index in range(count)
     ]
-    outputs = [process.communicate(timeout=120) for process in processes]
+    try:
+        outputs = [process.communicate(timeout=240) for process in processes]
+    finally:
+        # Each set also started its agent container.
+        for index in range(count):
+            subprocess.run(
+                ["docker", "compose", "-p", f"sandbox-set-{index}", "down", "--volumes"],
+                capture_output=True,
+                check=False,
+            )
 
     for process, (stdout, stderr) in zip(processes, outputs, strict=True):
         assert process.returncode == 0, stdout + stderr

@@ -5,6 +5,7 @@ Unit tests substitute ``tests.fakes_compose.FakeCompose`` for :class:`Subprocess
 
 import asyncio
 import json
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -33,6 +34,13 @@ class Compose(Protocol):
     async def config(self, project: str, files: list[Path]) -> dict[str, Any]:
         """The normalised model of ``files`` (``extends`` resolved, paths absolute,
         variables interpolated), as ``docker compose config`` prints it."""
+        ...
+
+    async def exec(
+        self, project: str, service: str, command: list[str], workdir: str | None
+    ) -> int:
+        """Run ``command`` in the project's running ``service`` attached to this terminal
+        (stdin, stdout and stderr are inherited) and return its exit status."""
         ...
 
 
@@ -86,3 +94,18 @@ class SubprocessCompose:
         if not isinstance(document, dict):
             raise ComposeError("docker compose config did not print a mapping")
         return {str(key): value for key, value in cast(dict[Any, Any], document).items()}
+
+    async def exec(
+        self, project: str, service: str, command: list[str], workdir: str | None
+    ) -> int:
+        argv = ["docker", "compose", "-p", project, "exec"]
+        if not sys.stdin.isatty():
+            argv.append("-T")  # no TTY to allocate when input is piped
+        if workdir is not None:
+            argv += ["-w", workdir]
+        argv += [service, *command]
+        try:
+            process = await asyncio.create_subprocess_exec(*argv)
+        except FileNotFoundError as exc:
+            raise ComposeError("docker is not installed or not on PATH") from exc
+        return await process.wait()

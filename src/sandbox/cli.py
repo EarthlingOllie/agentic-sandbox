@@ -18,6 +18,7 @@ from typer.core import TyperGroup
 
 from sandbox.commands.down import down
 from sandbox.commands.save import save
+from sandbox.commands.sh import sh
 from sandbox.commands.templates import templates
 from sandbox.config import load_config
 from sandbox.context import (
@@ -160,11 +161,13 @@ def up(
         typer.echo(f"  services: {', '.join(result.services)} {status} [{result.project}]")
     else:
         typer.echo("  services: none (no .sandbox/compose.yaml services)")
+    typer.echo(f"  agent: running [{result.project}]; open a shell: sandbox {result.set_name} sh")
 
 
 app.command()(down)
 app.command()(save)
 app.command()(templates)
+app.command()(sh)
 
 
 def main() -> None:

@@ -115,7 +115,10 @@ def test_parallel_sets_fail_independently_and_rollback_keeps_worktrees(env: Env)
     assert ok.returncode == 0, ok_err
     assert bad.returncode == 1
     assert "rolled back set 'it-rb-bad'" in bad_err
-    assert labelled("it-rb-ok", "container") == ["sandbox-it-rb-ok-app-1"]
+    assert sorted(labelled("it-rb-ok", "container")) == [
+        "sandbox-it-rb-ok-agent-1",
+        "sandbox-it-rb-ok-app-1",
+    ]
     assert leftovers("it-rb-bad") == []
     worktree = env.set_dir("it-rb-bad") / "bad"
     assert git(worktree, "branch", "--show-current") == "agent/it-rb-bad"
@@ -126,13 +129,16 @@ def test_running_set_is_a_no_op_and_a_stopped_one_resumes(env: Env) -> None:
     make_repo(env, "good", quick_service(healthy=True))
     first = sandbox(env, "it-rb-ok", "up", "--repos", "good")
     assert first.wait(timeout=180) == 0
-    container_id = docker("ps", "-q", "--filter", "label=sandbox.set=it-rb-ok")
+    # The app's container (the set's agent runs next to it).
+    app = ["ps", "-q", "--filter", "label=sandbox.set=it-rb-ok"]
+    app += ["--filter", "label=com.docker.compose.service=app"]
+    container_id = docker(*app)
 
     again = sandbox(env, "it-rb-ok", "up")
     out, err = again.communicate(timeout=60)
     assert again.returncode == 0, err
     assert "already running" in out
-    assert docker("ps", "-q", "--filter", "label=sandbox.set=it-rb-ok") == container_id
+    assert docker(*app) == container_id
 
     docker("stop", "-t", "1", container_id)
     resumed = sandbox(env, "it-rb-ok", "up")
@@ -144,7 +150,7 @@ def test_running_set_is_a_no_op_and_a_stopped_one_resumes(env: Env) -> None:
     out, err = recreated.communicate(timeout=180)
     assert recreated.returncode == 0, err
     assert "recreated" in out
-    assert docker("ps", "-q", "--filter", "label=sandbox.set=it-rb-ok") != container_id
+    assert docker(*app) != container_id
 
 
 @pytest.mark.parametrize("whole_group", [True, False], ids=["terminal-ctrl-c", "sigint-to-cli"])

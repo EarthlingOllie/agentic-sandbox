@@ -13,6 +13,8 @@ from typing import Final
 
 PROJECT_PREFIX: Final = "sandbox-"
 SET_LABEL: Final = "sandbox.set"
+# Every set's agent container; repos may not declare a service of this name.
+AGENT_SERVICE: Final = "agent"
 
 
 def project_name(set_name: str) -> str:

@@ -58,7 +58,7 @@ def test_up_waits_for_healthy_services_and_down_removes_them(env: Env, mysql_rep
     # `up` returned, so the service is already healthy: no polling here.
     container = f"{PROJECT}-mysql-1"
     assert docker("inspect", "-f", "{{.State.Health.Status}}", container) == "healthy"
-    assert labelled("container") == [container]
+    assert sorted(labelled("container")) == [f"{PROJECT}-agent-1", container]
     assert labelled("network") == [f"{PROJECT}_default"]
     assert labelled("volume") == [f"{PROJECT}_data"]
     # Reachable by its short alias from another container on the set's network.
@@ -89,4 +89,5 @@ def test_repo_without_compose_file_provisions_worktree_only(env: Env, mysql_repo
 
     assert result.exit_code == 0, result.output
     assert git(env.set_dir(SET) / "api", "branch", "--show-current") == f"agent/{SET}"
-    assert labelled("container") == []
+    # No backing services: only the set's agent runs.
+    assert labelled("container") == [f"{PROJECT}-agent-1"]
