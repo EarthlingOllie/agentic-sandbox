@@ -4,11 +4,11 @@
 
 **Blocked by:** 03 (Compose single repo)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Each set leases one /24 from the configured pool (default 127.42.0.0/16); each hostname takes an IP in .1–.254
-- [ ] The lease file is `flock`-guarded; concurrent `up` processes never hand out the same block or IP
-- [ ] Leases are sticky: `down` then `up` yields the same IPs; leases are released only by `prune`
-- [ ] Ports are published only on the hostname's IP (e.g. `127.42.3.5:3306:3306`); two sets with the same service come up side by side on Linux
-- [ ] Each service has both its short alias and `<service>.<set>.test` as network aliases on the set network
-- [ ] `up` prints each binding (hostname, IP, port) on success and on the no-op path
+- [x] Each set leases one /24 from the configured pool (default 127.42.0.0/16); each hostname takes an IP in .1–.254
+- [x] The lease file is `flock`-guarded; concurrent `up` processes never hand out the same block or IP
+- [x] Leases are sticky: `down` then `up` yields the same IPs; leases are released only by `prune`
+- [x] Ports are published only on the hostname's IP (e.g. `127.42.3.5:3306:3306`); two sets with the same service come up side by side on Linux
+- [x] Each service has both its short alias and `<service>.<set>.test` as network aliases on the set network
+- [x] `up` prints each binding (hostname, IP, port) on success and on the no-op path

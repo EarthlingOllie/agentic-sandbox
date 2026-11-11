@@ -16,6 +16,7 @@ from typing import Annotated, Any
 import typer
 from typer.core import TyperGroup
 
+from sandbox.bindings import format_bindings
 from sandbox.commands.claude import claude
 from sandbox.commands.down import down
 from sandbox.commands.save import save
@@ -160,6 +161,10 @@ def up(
     if result.services:
         status = "running" if result.action is UpAction.NOOP else "healthy"
         typer.echo(f"  services: {', '.join(result.services)} {status} [{result.project}]")
+        if result.bindings:
+            typer.echo("  bindings:")
+            for line in format_bindings(result.bindings):
+                typer.echo(f"    {line}")
     else:
         typer.echo("  services: none (no .sandbox/compose.yaml services)")
     typer.echo(f"  agent: running [{result.project}]; open a shell: sandbox {result.set_name} sh")

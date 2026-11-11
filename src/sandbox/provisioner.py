@@ -21,6 +21,7 @@ from typing import Any, Final
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.agent_override import check_agent_override
+from sandbox.bindings import Binding, bindings, lease_ips, service_ips
 from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import resolve as resolve_services
@@ -57,6 +58,8 @@ class UpResult:
     # Service names started under `project`; empty for a worktree-only set.
     services: list[str]
     action: UpAction
+    # Each service hostname with its leased IP and native ports.
+    bindings: list[Binding]
 
 
 @dataclass(frozen=True)
@@ -174,6 +177,7 @@ async def _compose_up(ctx: UpContext) -> None:
             ctx.graph,
             ctx.plan.sources(),
             ctx.plan.agent,
+            service_ips(ctx.set_name, ctx.graph, ctx.lease),
         )
     )
     await ctx.compose.up(ctx.project, [*(rc.file for rc in ctx.repo_composes), override])
@@ -188,6 +192,7 @@ VALIDATION_STEPS: Final[list[Step]] = [
     Step("compose-files", _load_composes),
     Step("dedup", _dedup_services),
     Step("agent-override", check_agent_override),
+    Step("ip-leases", lease_ips),
     # Register further checks (hostname clashes, prerequisites) above this line.
     Step("observe-state", _observe_state),
 ]
@@ -275,6 +280,7 @@ class Provisioner:
             ctx.project,
             ctx.services,
             ctx.action,
+            bindings(ctx.set_name, ctx.graph, ctx.lease),
         )
 
     async def down(self, set_name: str) -> DownResult:

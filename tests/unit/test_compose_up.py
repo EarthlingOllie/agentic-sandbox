@@ -51,6 +51,8 @@ def test_override_labels_every_resource_with_the_set_name(env: Env) -> None:
     label = {"sandbox.set": "jira-123"}
     # The agent service (tested in test_agent.py) carries the label too.
     assert override["services"].pop("agent")["labels"] == label
+    # Network aliases are tested in test_up_network.py.
+    override["services"]["mysql"].pop("networks")
     assert override == {
         "name": "sandbox-jira-123",
         "services": {"mysql": {"labels": label}},

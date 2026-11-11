@@ -27,6 +27,7 @@ from sandbox.compose.services import RepoCompose
 from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.git import Git
+from sandbox.leases import SetLease
 from sandbox.plan import SetPlan
 from sandbox.state import SetState, UpAction
 from sandbox.worktrees import WorktreeManager, WorktreeResult
@@ -60,6 +61,8 @@ class UpContext:
     running: set[str] = field(default_factory=set[str])
     state: SetState = SetState.ABSENT
     action: UpAction = UpAction.PROVISION
+    # The set's loopback IP lease (None when it has no services).
+    lease: SetLease | None = None
     # Filled in by provision steps.
     plan_created: bool = False
     worktrees: list[WorktreeResult] = field(default_factory=list[WorktreeResult])

@@ -4,6 +4,7 @@
 - ``services``: reading a repo's ``.sandbox/compose.yaml`` and the set-label fragment.
 - ``override``: assembling the per-set ``override.yaml`` from registered fragments.
 - ``dedup``: one instance per same-named service across repos, or a conflict diff.
+- ``network``: each service's IP-bound native ports and ``<service>.<set>.test`` aliases.
 
 Later concerns (networking, dedup, init hooks, the agent, web apps) add a module here and
 register their fragment in ``override.FRAGMENTS``.

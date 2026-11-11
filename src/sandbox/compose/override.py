@@ -9,12 +9,14 @@ under ``sandbox.compose`` and one line to ``FRAGMENTS``.
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any, Final
 
 from sandbox.compose import project_name
 from sandbox.compose.agent import agent_fragment
 from sandbox.compose.dedup import ServiceGraph, relocation_fragment
+from sandbox.compose.network import network_fragment
 from sandbox.compose.services import RepoCompose, set_labels_fragment
 from sandbox.yamlio import dump_yaml
 
@@ -32,6 +34,8 @@ class OverrideContext:
     sources: Mapping[str, Path] = field(default_factory=dict[str, Path])
     # The plan's agent override, if any (see sandbox.compose.agent).
     agent: Mapping[str, Any] | None = None
+    # Service name -> its leased loopback IP (see sandbox.leases).
+    ips: Mapping[str, IPv4Address] = field(default_factory=dict[str, IPv4Address])
 
 
 Fragment = Callable[[OverrideContext], dict[str, Any]]
@@ -53,11 +57,17 @@ def _agent(ctx: OverrideContext) -> dict[str, Any]:
     return agent_fragment(ctx.set_name, ctx.set_dir, ctx.sources, ctx.agent)
 
 
+def _network(ctx: OverrideContext) -> dict[str, Any]:
+    definitions = {name: s.definition for name, s in ctx.graph.services.items()}
+    return network_fragment(ctx.set_name, definitions, ctx.ips)
+
+
 FRAGMENTS: Final[list[Fragment]] = [
     _project,
     _set_labels,
     _relocate,
     _agent,
+    _network,
 ]
 
 
