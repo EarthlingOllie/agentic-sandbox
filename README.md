@@ -364,7 +364,8 @@ The macOS launchd/`lo0` path is unit-tested against a fake host (the generated p
 its alias script are run with a stand-in `ifconfig`), but only a person on a Mac with sudo
 can verify it for real: run `sudo sandbox setup --sets 2`, check `ifconfig lo0` lists
 127.42.0.1-127.42.1.254, reboot and check again, run `up` for a set with services, then
-`sudo sandbox setup --uninstall` and check the aliases and the plist are gone.
+`sudo sandbox setup --uninstall` and check the aliases and the plist are gone. The full list is
+the [macOS release checklist](docs/release-checklist-macos.md).
 
 ## Configuration
 
@@ -441,9 +442,21 @@ $ uv run ruff format --check . && uv run ruff check .
 $ uv run pyright                   # strict mode
 $ uv run pytest -m "not integration"   # unit: fakes, runs on Linux and macOS
 $ uv run pytest -m integration         # integration: real git + Docker Compose (Linux in CI)
+$ SANDBOX_E2E=1 uv run pytest -m e2e   # end to end: sudo setup, real /etc/hosts (throwaway runner only)
 ```
 
-CI (`.github/workflows/ci.yml`) enforces all of the above.
+CI (`.github/workflows/ci.yml`) enforces all of the above except the end-to-end suite.
+
+The **end-to-end suite** (`tests/e2e/`) drives the installed `sandbox` CLI as a user would,
+the privileged parts included: `sudo sandbox setup`, then two sets brought `up` in parallel
+(each with two repos sharing `mysql`, one with an init hook, and a web app with an extra
+host), HTTPS by hostname through the real `/etc/hosts` and the installed mkcert CA from the
+host and from the agent, `down`, `destroy` and `sudo sandbox setup --uninstall`. It changes
+the machine it runs on (the helper, a sudoers rule, the mkcert CA, `/etc/hosts`), so it runs
+only with `SANDBOX_E2E=1`, as a non-root user with passwordless sudo. Its workflow
+(`.github/workflows/e2e.yml`) runs it on a GitHub-hosted Ubuntu runner nightly, on demand
+and for `v*` tags, not on every push. Before each release a person also works through the
+[macOS release checklist](docs/release-checklist-macos.md).
 
 ### Conventions
 

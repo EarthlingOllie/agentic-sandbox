@@ -113,6 +113,10 @@ def _merge(into: dict[str, Any], other: dict[str, Any]) -> None:
         current = into.get(key)
         if isinstance(current, dict) and isinstance(value, dict):
             _merge(current, value)  # pyright: ignore[reportUnknownArgumentType]
+        elif isinstance(current, list) and isinstance(value, list):
+            # Two fragments adding to one list (e.g. an init-hook mount and the CA mount on
+            # the same service's volumes) both keep their entries.
+            into[key] = [*cast(list[Any], current), *cast(list[Any], value)]
         elif isinstance(current, Override) and isinstance(current.value, list):
             # A restated (``!override``) list keeps its entries; later fragments add to it.
             into[key] = Override([*current.value, *cast(list[Any], value)])

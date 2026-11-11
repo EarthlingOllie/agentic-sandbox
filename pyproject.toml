@@ -58,4 +58,5 @@ testpaths = ["tests"]
 addopts = ["--strict-markers", "-ra"]
 markers = [
     "integration: exercises real external tools (git, Docker Compose); Linux CI only",
+    "e2e: changes the machine (sudo setup, /etc/hosts); runs only with SANDBOX_E2E=1",
 ]

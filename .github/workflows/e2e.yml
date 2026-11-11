@@ -1,0 +1,48 @@
+name: E2E
+
+# The end-to-end suite (tests/e2e): the real `sandbox` CLI on a runner it really changes,
+# `sudo sandbox setup` and /etc/hosts included. It needs passwordless sudo, which
+# GitHub-hosted ubuntu runners provide; if org policy forbids sudo there, point `runs-on`
+# at a self-hosted Linux runner whose user has passwordless sudo.
+#
+# Deliberately not on every push (ci.yml runs the unit and integration jobs there): it runs
+# nightly, on demand, and for release tags. macOS is covered by a manual checklist
+# (docs/release-checklist-macos.md).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: end-to-end (Linux, sudo)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Passwordless sudo is available
+        run: sudo -n true
+      - run: docker compose version
+      # mkcert issues the sets' certificates; `sandbox setup` installs its CA system-wide.
+      - run: sudo apt-get update && sudo apt-get install -y mkcert libnss3-tools
+      # Pulled up front so a slow registry shows up here, not as a healthcheck timeout.
+      - run: docker pull mysql:8.4
+      - run: docker pull python:3.12-alpine
+      - run: SANDBOX_E2E=1 uv run pytest -m e2e tests/e2e -v
+      - name: Hosts file after the run
+        if: always()
+        run: cat /etc/hosts

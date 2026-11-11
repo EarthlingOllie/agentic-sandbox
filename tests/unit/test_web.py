@@ -222,6 +222,20 @@ def test_only_root_ca_pem_is_mounted_into_every_container(env: Env, mkcert: Fake
     assert rendered["agent"]["environment"]["NODE_EXTRA_CA_CERTS"] == CA_TARGET
 
 
+def test_the_ca_mount_keeps_a_services_init_hook_mount(env: Env, mkcert: FakeMkcert) -> None:
+    """Found by the end-to-end suite: the CA mount used to replace the hook's mount."""
+    git = FakeGit()
+    web = make_repo(env, git, "web", WEB_AND_MYSQL)
+    (web / ".sandbox" / "init").mkdir()
+    (web / ".sandbox" / "init" / "mysql.sh").write_text("true\n")
+
+    up(env, git, FakeCompose(), mkcert, "web")
+
+    mysql = mounts(services(env)["mysql"])
+    assert mysql["/sandbox/init/web"]["source"] == str(web / ".sandbox" / "init")
+    assert mysql[CA_TARGET]["source"] == str(mkcert.ca_dir / "rootCA.pem")
+
+
 def test_an_agent_override_cannot_replace_the_ca_mount(env: Env, mkcert: FakeMkcert) -> None:
     with env.config_file.open("a") as config:
         config.write(
