@@ -4,9 +4,9 @@
 
 **Blocked by:** 06 (hosts file block), 14 (status)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `sandbox SET prune` removes the set's containers, network, volumes and hosts block, and releases its IP leases; worktrees and plan remain
-- [ ] `prune` refuses on a running set
-- [ ] Bare `sandbox prune` finds every orphan via the status reconciliation and clears each, sets processed concurrently under a bound and independently (one failure doesn't stop the rest)
-- [ ] After pruning, a fresh `up` of the same set gets a newly leased block
+- [x] `sandbox SET prune` removes the set's containers, network, volumes and hosts block, and releases its IP leases; worktrees and plan remain
+- [x] `prune` refuses on a running set
+- [x] Bare `sandbox prune` finds every orphan via the status reconciliation and clears each, sets processed concurrently under a bound and independently (one failure doesn't stop the rest)
+- [x] After pruning, a fresh `up` of the same set gets a newly leased block

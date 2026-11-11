@@ -219,6 +219,18 @@ the agent running), **stopped** (a plan, nothing running), **partial** (some run
 **orphaned** (containers or an IP lease whose set has no plan, or a set directory without
 one).
 
+## Prune
+
+`sandbox SET prune` removes a stopped set's containers, network, volumes and hosts block,
+and releases its IP lease back to the pool; the next `up` leases it a fresh block. It
+refuses while any of the set's services run (`sandbox SET down` first). The set directory,
+plan and worktrees are never touched.
+
+Bare `sandbox prune` does the same for every **orphaned** set `status` reports (leftovers
+of crashes). Sets are pruned concurrently (at most 4 at a time) and independently: a set
+that fails is reported, keeps its lease so a rerun retries it, and the rest carry on; the
+command then exits 1.
+
 ## Configuration
 
 `~/.config/sandbox/config.yaml` (override the path with `SANDBOX_CONFIG`). Every key is
