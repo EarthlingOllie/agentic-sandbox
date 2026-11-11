@@ -62,6 +62,9 @@ class SubprocessCompose:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Out of the terminal's process group: a Ctrl-C reaches sandbox only, which
+                # stops `compose up` itself and must not have the rollback's `down` killed.
+                start_new_session=True,
             )
         except FileNotFoundError as exc:
             raise ComposeError("docker is not installed or not on PATH") from exc

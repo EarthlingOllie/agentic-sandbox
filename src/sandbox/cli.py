@@ -147,7 +147,8 @@ def up(
     except SandboxError as exc:
         failure(exc)
     except KeyboardInterrupt:
-        # The pipeline has already rolled the set's services back (and said so).
+        # The pipeline has already reported the rollback: finished, or interrupted with
+        # the Compose project that may be left.
         typer.echo(f"error: interrupted: `up` of set {set_name!r} was cancelled", err=True)
         raise typer.Exit(code=130) from None
 

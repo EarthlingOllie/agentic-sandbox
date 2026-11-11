@@ -6,6 +6,7 @@ containers, network and volumes down again but keeps the plan and worktrees.
 """
 
 import asyncio
+import signal
 from pathlib import Path
 
 import pytest
@@ -353,3 +354,52 @@ def test_rollback_is_shielded_from_repeated_cancellation(env: Env) -> None:
 
     assert compose.down_finished
     assert compose.running == {}
+
+
+class CtrlCCompose(FakeCompose):
+    """Ctrl-C arrives as a real SIGINT while `up` waits for health, and again while the
+    rollback's `down` is running, as when a developer presses Ctrl-C twice."""
+
+    def __init__(self, *, abort_down: bool = False) -> None:
+        super().__init__()
+        self.abort_down = abort_down
+        self.down_finished = False
+
+    async def up(self, project: str, files: list[Path]) -> None:
+        await super().up(project, files)
+        signal.raise_signal(signal.SIGINT)
+        await asyncio.Event().wait()
+
+    async def down(self, project: str) -> None:
+        if self.abort_down:
+            raise KeyboardInterrupt  # the rollback dies however it dies
+        signal.raise_signal(signal.SIGINT)
+        await asyncio.sleep(0.05)
+        await super().down(project)
+        self.down_finished = True
+
+
+def test_second_ctrl_c_during_rollback_does_not_abort_it(env: Env) -> None:
+    git, compose = FakeGit(), CtrlCCompose()
+    make_repo(env, git)
+
+    result = invoke(UP, git, compose)
+
+    assert result.exit_code == 130, result.output
+    assert compose.down_finished
+    assert compose.running == {}
+    assert "rolled back set 'jira-123'" in result.stderr
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+
+
+def test_aborted_rollback_is_reported_as_incomplete(env: Env) -> None:
+    git, compose = FakeGit(), CtrlCCompose(abort_down=True)
+    make_repo(env, git)
+
+    result = invoke(UP, git, compose)
+
+    assert result.exit_code == 130, result.output
+    assert "rolled back set" not in result.stderr
+    assert "rollback of set 'jira-123' was interrupted" in result.stderr
+    assert PROJECT in result.stderr
+    assert "sandbox jira-123 down" in result.stderr

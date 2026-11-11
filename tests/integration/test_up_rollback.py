@@ -155,8 +155,11 @@ def test_running_set_is_a_no_op_and_a_stopped_one_resumes(env: Env) -> None:
     assert docker(*app) != container_id
 
 
+@pytest.mark.parametrize("presses", [1, 2], ids=["once", "twice"])
 @pytest.mark.parametrize("whole_group", [True, False], ids=["terminal-ctrl-c", "sigint-to-cli"])
-def test_ctrl_c_mid_up_leaves_no_orphaned_resources(env: Env, whole_group: bool) -> None:
+def test_ctrl_c_mid_up_leaves_no_orphaned_resources(
+    env: Env, whole_group: bool, presses: int
+) -> None:
     # mysql takes several seconds to turn healthy, so `up` is still waiting when we interrupt.
     path = env.cwd / "api"
     shutil.copytree(FIXTURES / "mysql-repo", path)
@@ -168,10 +171,13 @@ def test_ctrl_c_mid_up_leaves_no_orphaned_resources(env: Env, whole_group: bool)
         assert process.poll() is None, process.communicate()
         assert time.monotonic() < deadline, "the container never appeared"
         time.sleep(0.2)
-    if whole_group:
-        os.killpg(process.pid, signal.SIGINT)  # what a terminal does on Ctrl-C
-    else:
-        process.send_signal(signal.SIGINT)  # only sandbox: it must stop `compose up` itself
+    for press in range(presses):
+        if press:
+            time.sleep(0.3)  # the rollback's `compose down` is stopping mysql by now
+        if whole_group:
+            os.killpg(process.pid, signal.SIGINT)  # what a terminal does on Ctrl-C
+        else:
+            process.send_signal(signal.SIGINT)  # only sandbox: it must stop `compose up`
     _, err = process.communicate(timeout=120)
 
     assert process.returncode == 130, err

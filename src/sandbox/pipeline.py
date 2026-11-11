@@ -6,7 +6,9 @@
    failure here needs no rollback; every one of them finishes before any container starts.
 2. **Provision steps** create things in order. If one fails, or ``up`` is cancelled (Ctrl-C),
    the steps that started are rolled back in reverse order. Rollback is shielded from
-   cancellation, so a second cancel cannot leave the set's containers orphaned.
+   cancellation, and Ctrl-C (SIGINT) is ignored while it runs, so a second Ctrl-C cannot
+   abort it and leave the set's containers orphaned. If the rollback dies anyway, ``up``
+   says so and names the Compose project that may be left.
 
 A step is a name, an async ``run(ctx)`` and an optional async ``rollback(ctx)``. Rollback
 undoes the set's own infrastructure only (containers, network, volumes, host entries); plan
@@ -15,10 +17,13 @@ use :func:`fail_fast`, a ``TaskGroup`` that cancels sibling work on the first fa
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Sequence
+import os
+import signal
+from collections.abc import Awaitable, Callable, Coroutine, Generator, Iterable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.compose.cli import Compose
@@ -96,12 +101,47 @@ async def provision(steps: Sequence[Step], ctx: UpContext) -> None:
             started.append(step)
             await step.run(ctx)
     except BaseException as exc:
-        problems = await shielded(_roll_back(reversed(started), ctx))
+        try:
+            with _sigint_ignored():
+                problems = await shielded(_roll_back(reversed(started), ctx))
+        except BaseException:
+            ctx.warn(
+                f"rollback of set {ctx.set_name!r} was interrupted: containers, network "
+                f"and volumes of Compose project {ctx.project} may be left\n"
+                f"clean up with: sandbox {ctx.set_name} down"
+            )
+            raise
         report = _rollback_report(ctx, problems)
         if isinstance(exc, SandboxError):
             raise SandboxError(f"{exc}\n{report}") from exc
         ctx.warn(report)
         raise
+
+
+SIGINT_IGNORED_NOTE: Final = b"sandbox: rolling back; Ctrl-C is ignored until it finishes\n"
+
+
+@contextmanager
+def _sigint_ignored() -> Generator[None]:
+    """Ignore Ctrl-C while the rollback runs.
+
+    ``asyncio.run`` turns a second SIGINT into a KeyboardInterrupt that no shield stops; it
+    would cancel the rollback and kill its ``compose down``. The previous handler is
+    restored afterwards, so the first Ctrl-C still ends ``up`` with KeyboardInterrupt.
+    """
+    try:
+        previous = signal.signal(signal.SIGINT, _note_ignored_sigint)
+    except ValueError:  # not the main thread: SIGINT is never delivered here
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous if previous is not None else signal.SIG_DFL)
+
+
+def _note_ignored_sigint(_signum: int, _frame: object) -> None:
+    os.write(2, SIGINT_IGNORED_NOTE)  # unbuffered: safe in a signal handler
 
 
 async def _roll_back(steps: Iterable[Step], ctx: UpContext) -> list[str]:
