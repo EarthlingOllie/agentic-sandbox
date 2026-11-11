@@ -26,9 +26,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
+from sandbox.certs import Mkcert, SetCertificate, SubprocessMkcert
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.services import RepoCompose
+from sandbox.compose.web import WebApp
 from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.git import Git
@@ -64,6 +66,7 @@ class UpContext:
     images: ImageProbe = field(default_factory=DockerImageProbe)
     # Writes the set's hosts block; None means the one the config selects.
     hosts: "HostsWriter | None" = None
+    mkcert: Mkcert = field(default_factory=SubprocessMkcert)
     # Filled in by validation steps.
     repo_composes: list[RepoCompose] = field(default_factory=list[RepoCompose])
     services: list[str] = field(default_factory=list[str])
@@ -73,9 +76,13 @@ class UpContext:
     action: UpAction = UpAction.PROVISION
     # The set's loopback IP lease (None when it has no services).
     lease: SetLease | None = None
+    # The repos' HTTPS web apps, and the mkcert CA certificate (None without a web app).
+    web_apps: list[WebApp] = field(default_factory=list[WebApp])
+    root_ca: Path | None = None
     # Filled in by provision steps.
     plan_created: bool = False
     worktrees: list[WorktreeResult] = field(default_factory=list[WorktreeResult])
+    certificate: SetCertificate | None = None
 
 
 StepFn = Callable[[UpContext], Awaitable[None]]

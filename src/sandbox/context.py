@@ -10,6 +10,7 @@ from typing import Final, NoReturn
 import typer
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
+from sandbox.certs import Mkcert, SubprocessMkcert
 from sandbox.compose.cli import Compose, SubprocessCompose
 from sandbox.docker import Docker, SubprocessDocker
 from sandbox.errors import SandboxError
@@ -26,6 +27,7 @@ class Deps:
     compose: Compose = field(default_factory=SubprocessCompose)
     images: ImageProbe = field(default_factory=DockerImageProbe)
     docker: Docker = field(default_factory=SubprocessDocker)
+    mkcert: Mkcert = field(default_factory=SubprocessMkcert)
 
 
 def usage_error(message: str) -> NoReturn:

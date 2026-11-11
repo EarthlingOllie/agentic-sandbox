@@ -48,4 +48,7 @@ jobs:
       - run: docker compose version
       # Pulled up front so a slow registry shows up here, not as a healthcheck timeout.
       - run: docker pull mysql:8.4
+      - run: docker pull python:3.12-alpine
+      # Web app tests issue certificates from a throwaway CA ($CAROOT in a temp dir).
+      - run: sudo apt-get update && sudo apt-get install -y mkcert
       - run: uv run pytest -m integration

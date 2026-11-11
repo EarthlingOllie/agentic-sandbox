@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner, Result
 
+from sandbox.certs import Mkcert
 from sandbox.cli import app
 from sandbox.compose.cli import Compose
 from sandbox.context import Deps
@@ -73,12 +74,19 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
 
 
 def invoke(
-    args: Sequence[str], git: Git, compose: Compose | None = None, docker: Docker | None = None
+    args: Sequence[str],
+    git: Git,
+    compose: Compose | None = None,
+    docker: Docker | None = None,
+    mkcert: Mkcert | None = None,
 ) -> Result:
     """Run the CLI in-process. Compose defaults to a fake so git-only tests need no Docker;
-    Docker queries default to a fake that reports what that Compose fake is running."""
+    Docker queries default to a fake that reports what that Compose fake is running; mkcert
+    defaults to the real CLI (only sets with a web app use it)."""
     compose = compose if compose is not None else FakeCompose()
     if docker is None:
         docker = FakeDocker(compose) if isinstance(compose, FakeCompose) else SubprocessDocker()
     deps = Deps(git=git, compose=compose, docker=docker)
+    if mkcert is not None:
+        deps.mkcert = mkcert
     return CliRunner().invoke(app, list(args), obj=deps)

@@ -4,11 +4,13 @@
 
 - ``VALIDATION_STEPS`` check every repo, its ``.sandbox/`` and compose file, deduplicate
   same-named services across repos (``sandbox.compose.dedup``), check the agent override
-  and its image (``sandbox.agent_override``), check init hooks target the set's services
+  and its image (``sandbox.agent_override``), check web apps, hostname clashes and the
+  mkcert CA (``sandbox.web``), check init hooks target the set's services
   (``sandbox.hooks``), then observe the set's state.
   Nothing is created until all of them pass.
 - The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
-- ``PROVISION_STEPS`` write the plan, ensure worktrees and bring services up healthy as
+- ``PROVISION_STEPS`` write the plan, ensure worktrees, issue or reuse the set's TLS
+  certificate (``sandbox.web``) and bring services up healthy as
   Compose project ``sandbox-<set>``, run the repos' init hooks in them (``sandbox.hooks``),
   then write the set's hosts block (``sandbox.hosts``); on failure or Ctrl-C, started steps
   roll back.
@@ -25,6 +27,7 @@ from typing import Any, Final
 from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.agent_override import check_agent_override
 from sandbox.bindings import Binding, bindings, lease_ips, service_ips
+from sandbox.certs import Mkcert, SubprocessMkcert
 from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import resolve as resolve_services
@@ -47,6 +50,7 @@ from sandbox.plan import (
     write_new_plan,
 )
 from sandbox.state import UpAction, decide, observe
+from sandbox.web import check_web_apps, issue_certificate
 from sandbox.worktrees import WorktreeManager, WorktreeOutcome, WorktreeResult
 
 __all__ = ["PROVISION_STEPS", "VALIDATION_STEPS", "Provisioner", "Step", "UpContext"]
@@ -183,6 +187,9 @@ async def _compose_up(ctx: UpContext) -> None:
             ctx.plan.sources(),
             ctx.plan.agent,
             service_ips(ctx.set_name, ctx.graph, ctx.lease),
+            web_apps=ctx.web_apps,
+            root_ca=ctx.root_ca,
+            tls_dir=ctx.certificate.directory if ctx.certificate else None,
         )
     )
     await ctx.compose.up(ctx.project, [*(rc.file for rc in ctx.repo_composes), override])
@@ -196,6 +203,7 @@ VALIDATION_STEPS: Final[list[Step]] = [
     Step("repos", _validate_repos),
     Step("compose-files", _load_composes),
     Step("dedup", _dedup_services),
+    Step("web-apps", check_web_apps),
     Step("agent-override", check_agent_override),
     Step("ip-leases", lease_ips),
     Step("init-hooks", check_hooks),
@@ -207,6 +215,7 @@ PROVISION_STEPS: Final[list[Step]] = [
     Step("plan", _write_plan),
     Step("worktrees", _ensure_worktrees),
     Step("stop-for-recreate", _stop_for_recreate),
+    Step("certificate", issue_certificate),
     Step("compose-up", _compose_up, rollback=_compose_down),
     Step("init-hooks", run_hooks),
     Step("hosts-block", write_hosts_block, rollback=remove_hosts_block),
@@ -223,8 +232,10 @@ class Provisioner:
         warn: Warn,
         images: ImageProbe | None = None,
         hosts: HostsWriter | None = None,
+        mkcert: Mkcert | None = None,
     ) -> None:
         self._config = config
+        self._mkcert = mkcert if mkcert is not None else SubprocessMkcert()
         self._hosts = hosts if hosts is not None else hosts_writer(config)
         self._images = images if images is not None else DockerImageProbe()
         self._git = git
@@ -278,6 +289,7 @@ class Provisioner:
             recreate=recreate,
             images=self._images,
             hosts=self._hosts,
+            mkcert=self._mkcert,
         )
         await validate(VALIDATION_STEPS, ctx)
         if ctx.action is not UpAction.NOOP:

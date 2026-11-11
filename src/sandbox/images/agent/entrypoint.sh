@@ -19,4 +19,12 @@ if ! grep -q "^[^:]*:[^:]*:${uid}:" /etc/passwd; then
 fi
 mkdir -p "$home" 2>/dev/null || true
 
+# In a set with HTTPS web apps, sandbox mounts the machine's mkcert CA certificate (never
+# its key) here. Trust it system-wide (curl, git, openssl), once per container.
+ca=/sandbox/ca/rootCA.pem
+bundle=/etc/ssl/certs/ca-certificates.crt
+if [ -r "$ca" ] && [ -w "$bundle" ] && ! grep -qxF "$(sed -n 2p "$ca")" "$bundle"; then
+    cat "$ca" >>"$bundle"
+fi
+
 exec "$@"

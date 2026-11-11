@@ -11,7 +11,10 @@ Docker socket. It sees exactly:
 - each source repo's ``.git`` read-write at its exact host path, because a worktree's
   ``.git`` file points there; the source's working tree itself is never mounted;
 - the host's ``~/.claude/`` at ``/home/agent/.claude`` (``CLAUDE_CONFIG_DIR``), so every
-  set shares one login. The host's ``~/.claude.json`` is not mounted.
+  set shares one login. The host's ``~/.claude.json`` is not mounted;
+- in a set with a web app, the mkcert CA's ``rootCA.pem`` (never its key) read-only at
+  ``/sandbox/ca/rootCA.pem``. The bundled image's entrypoint adds it to the system trust
+  store, and ``NODE_EXTRA_CA_CERTS`` points Node (``claude``) at it.
 
 An **agent override** (a Compose fragment from the set plan, pinned there from a template
 or the global config) may replace the image, add settings to the agent and add services
@@ -30,6 +33,7 @@ from typing import Annotated, Any, Final, cast
 from pydantic import AfterValidator
 
 from sandbox.compose import AGENT_SERVICE, SET_LABEL
+from sandbox.compose.web import CA_TARGET, read_only_bind
 from sandbox.names import PLAN_FILENAME
 
 AGENT_HOME: Final = "/home/agent"
@@ -156,12 +160,13 @@ def agent_fragment(
     set_dir: Path,
     sources: Mapping[str, Path],
     override: Mapping[str, Any] | None = None,
+    root_ca: Path | None = None,
 ) -> dict[str, Any]:
     """The agent service (default, merged with ``override``, guarantees re-applied), plus
     the override's extra services, networks and volumes."""
     # Created here because Docker would otherwise create a missing bind source as root.
     host_claude_dir().mkdir(parents=True, exist_ok=True)
-    guarantees = _guarantees(set_name, set_dir, sources)
+    guarantees = _guarantees(set_name, set_dir, sources, root_ca)
     service: dict[str, Any] = {
         "image": default_image(),
         "build": {"context": str(IMAGE_DIR)},
@@ -215,25 +220,27 @@ def _bind(source: Path, target: str) -> dict[str, Any]:
     return {"type": "bind", "source": str(source), "target": target}
 
 
-def _guarantees(set_name: str, set_dir: Path, sources: Mapping[str, Path]) -> dict[str, Any]:
+def _guarantees(
+    set_name: str, set_dir: Path, sources: Mapping[str, Path], root_ca: Path | None = None
+) -> dict[str, Any]:
     """What sandbox sets on the agent last, whatever an override says.
 
-    The mounts are the only ones an override can't replace; a CA mount joins them once
-    sets have a CA (HTTPS web apps).
+    The mounts are the only ones an override can't replace, the CA's included.
     """
     plan_target = f"{workspace(set_name)}/{PLAN_FILENAME}"
-    return {
-        "user": agent_user(),
-        "environment": {"HOME": AGENT_HOME, "CLAUDE_CONFIG_DIR": AGENT_CLAUDE_DIR},
-        "volumes": [
-            _bind(set_dir, workspace(set_name)),
-            # Read-only: the plan pins the agent override, so an agent that could edit it
-            # would choose its own settings at the developer's next `up`.
-            {**_bind(set_dir / PLAN_FILENAME, plan_target), "read_only": True},
-            *(_bind(sources[n] / ".git", str(sources[n] / ".git")) for n in sorted(sources)),
-            _bind(host_claude_dir(), AGENT_CLAUDE_DIR),
-        ],
-    }
+    environment = {"HOME": AGENT_HOME, "CLAUDE_CONFIG_DIR": AGENT_CLAUDE_DIR}
+    volumes = [
+        _bind(set_dir, workspace(set_name)),
+        # Read-only: the plan pins the agent override, so an agent that could edit it
+        # would choose its own settings at the developer's next `up`.
+        {**_bind(set_dir / PLAN_FILENAME, plan_target), "read_only": True},
+        *(_bind(sources[n] / ".git", str(sources[n] / ".git")) for n in sorted(sources)),
+        _bind(host_claude_dir(), AGENT_CLAUDE_DIR),
+    ]
+    if root_ca is not None:
+        environment["NODE_EXTRA_CA_CERTS"] = CA_TARGET
+        volumes.append(read_only_bind(root_ca, CA_TARGET))
+    return {"user": agent_user(), "environment": environment, "volumes": volumes}
 
 
 def _sanitize_agent(

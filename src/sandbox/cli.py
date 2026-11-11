@@ -2,7 +2,7 @@
 
 The optional leading SET is peeled off before Click dispatches the verb and stored in the
 context's shared ``meta``, so every verb can read it with :func:`current_set`. Dependencies
-(git, Compose; mkcert later) travel in ``ctx.obj`` so tests can invoke the app in-process
+(git, Compose, mkcert) travel in ``ctx.obj`` so tests can invoke the app in-process
 with fakes: ``CliRunner().invoke(app, [...], obj=Deps(git=FakeGit(), compose=FakeCompose()))``.
 Verbs other than ``up`` live in ``sandbox.commands.<verb>`` and are registered below with one
 ``app.command`` line each; the helpers they share are in ``sandbox.context``.
@@ -134,7 +134,9 @@ def up(
             else None
         )
         deps = get_deps(ctx)
-        provisioner = Provisioner(config, deps.git, deps.compose, warn, images=deps.images)
+        provisioner = Provisioner(
+            config, deps.git, deps.compose, warn, images=deps.images, mkcert=deps.mkcert
+        )
         result = asyncio.run(
             provisioner.up(
                 set_name,

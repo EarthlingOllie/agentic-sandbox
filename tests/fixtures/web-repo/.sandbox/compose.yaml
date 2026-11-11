@@ -1,0 +1,17 @@
+# Fixture repo for the HTTPS web app integration tests (copied into a repo named `web`).
+# The web service is named after the repo and serves HTTPS on 443 itself, as `nobody`, with
+# the certificate sandbox mounts at /sandbox/tls/.
+services:
+  web:
+    image: python:3.12-alpine
+    user: "65534:65534"
+    command: ["python", "/srv/serve.py"]
+    volumes:
+      - ./serve.py:/srv/serve.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 443), 2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    x-sandbox:
+      web: true

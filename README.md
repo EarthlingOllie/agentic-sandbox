@@ -89,6 +89,42 @@ that exits non-zero fails the set and rolls it back (plan and worktrees are kept
 error shows the hook's output. Hooks are read from the repo's source checkout, like its
 compose file.
 
+### HTTPS web apps
+
+A repo marks its web service with the `x-sandbox` extension. The service must be named after
+the repo, and a repo has at most one:
+
+```yaml
+# web/.sandbox/compose.yaml
+services:
+  web:
+    build: ..
+    x-sandbox:
+      web: true # served at https://web.<set>.test
+```
+
+Sandbox then:
+
+- serves it at `https://<repo>.<set>.test`: the service's own leased IP, with port 443
+  published on that IP. The app listens on 443 itself, as non-root, because the service
+  gets `net.ipv4.ip_unprivileged_port_start=0`;
+- issues a per-set `*.<set>.test` certificate with mkcert into `<set dir>/tls/` and mounts
+  it read-only at `/sandbox/tls/cert.pem` and `/sandbox/tls/key.pem` (the key is readable
+  by any user, so the app can run as whatever user its image uses). Later `up`s reuse it
+  while it verifies against the CA and has more than 7 days left;
+- injects `WORKTREE` (the repo's worktree, `<set dir>/<repo>`) and `APP_URL`
+  (`https://<repo>.<set>.test`) into the service's environment, and nothing else;
+- mounts the mkcert CA's `rootCA.pem`, never `rootCA-key.pem`, read-only at
+  `/sandbox/ca/rootCA.pem` in every container of the set. The bundled agent image trusts it
+  system-wide (curl, git) and through `NODE_EXTRA_CA_CERTS`; a service image decides itself
+  whether to trust it.
+
+The host trusts the certificate once `sudo sandbox setup` has installed the mkcert CA
+(`mkcert -install`). `up` fails before any container starts if a set with a web app finds
+no `rootCA.pem` in mkcert's `CAROOT`, if a repo marks more than one service or a service not
+named after the repo, or if a hostname is used twice in the set (e.g. another repo runs a
+service with the web app's name). Sets without a web app need neither mkcert nor the CA.
+
 ### The agent container
 
 Every set also runs a hardened `agent` service (a repo may not declare a service of that
@@ -110,7 +146,8 @@ instead; an unknown name fails and points at `--repo`.
   repo's `.git` at its exact host path, because a worktree's `.git` file points there (so
   the agent can see every branch of the repo); the host's `~/.claude/` at
   `/home/agent/.claude` with `CLAUDE_CONFIG_DIR=/home/agent/.claude`, so all sets share one
-  login. Your main working trees and `~/.claude.json` are never mounted.
+  login. Your main working trees and `~/.claude.json` are never mounted. In a set with a
+  web app, the mkcert CA's `rootCA.pem` is also mounted read-only (see above).
 
 ### Claude Code in the agent
 

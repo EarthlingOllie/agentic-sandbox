@@ -7,18 +7,19 @@ the repo while sandbox's additions win where they overlap. A later concern adds 
 under ``sandbox.compose`` and one line to ``FRAGMENTS``.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any, Final, cast
 
 from sandbox.compose import project_name
-from sandbox.compose.agent import agent_fragment
+from sandbox.compose.agent import agent_fragment, extra_services
 from sandbox.compose.dedup import Override, ServiceGraph, relocation_fragment
 from sandbox.compose.hooks import hooks_fragment
 from sandbox.compose.network import network_fragment
 from sandbox.compose.services import RepoCompose, set_labels_fragment
+from sandbox.compose.web import WebApp, web_fragment
 from sandbox.hooks import find_hooks
 from sandbox.yamlio import dump_yaml
 
@@ -38,6 +39,11 @@ class OverrideContext:
     agent: Mapping[str, Any] | None = None
     # Service name -> its leased loopback IP (see sandbox.leases).
     ips: Mapping[str, IPv4Address] = field(default_factory=dict[str, IPv4Address])
+    # The repos' web apps, the mkcert CA certificate and the set's TLS directory
+    # (see sandbox.web; both paths None without a web app).
+    web_apps: Sequence[WebApp] = ()
+    root_ca: Path | None = None
+    tls_dir: Path | None = None
 
 
 Fragment = Callable[[OverrideContext], dict[str, Any]]
@@ -56,7 +62,7 @@ def _relocate(ctx: OverrideContext) -> dict[str, Any]:
 
 
 def _agent(ctx: OverrideContext) -> dict[str, Any]:
-    return agent_fragment(ctx.set_name, ctx.set_dir, ctx.sources, ctx.agent)
+    return agent_fragment(ctx.set_name, ctx.set_dir, ctx.sources, ctx.agent, ctx.root_ca)
 
 
 def _network(ctx: OverrideContext) -> dict[str, Any]:
@@ -68,6 +74,13 @@ def _init_hooks(ctx: OverrideContext) -> dict[str, Any]:
     return hooks_fragment(find_hooks(ctx.sources, ctx.graph.names()))
 
 
+def _web(ctx: OverrideContext) -> dict[str, Any]:
+    definitions = {name: s.definition for name, s in ctx.graph.services.items()}
+    return web_fragment(
+        ctx.web_apps, definitions, ctx.ips, ctx.root_ca, ctx.tls_dir, extra_services(ctx.agent)
+    )
+
+
 FRAGMENTS: Final[list[Fragment]] = [
     _project,
     _set_labels,
@@ -75,6 +88,7 @@ FRAGMENTS: Final[list[Fragment]] = [
     _agent,
     _network,
     _init_hooks,
+    _web,
 ]
 
 
@@ -102,5 +116,10 @@ def _merge(into: dict[str, Any], other: dict[str, Any]) -> None:
         elif isinstance(current, Override) and isinstance(current.value, list):
             # A restated (``!override``) list keeps its entries; later fragments add to it.
             into[key] = Override([*current.value, *cast(list[Any], value)])
+        elif isinstance(current, Override) and isinstance(value, dict):
+            # Likewise a restated mapping (a relocated service's environment, sysctls).
+            merged = dict(current.value)
+            _merge(merged, cast(dict[str, Any], value))
+            into[key] = Override(merged)
         else:
             into[key] = value
