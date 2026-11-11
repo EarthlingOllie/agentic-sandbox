@@ -2,35 +2,36 @@
 
 The optional leading SET is peeled off before Click dispatches the verb and stored in the
 context's shared ``meta``, so every verb can read it with :func:`current_set`. Dependencies
-(git today; Compose and mkcert later) travel in ``ctx.obj`` so tests can invoke the app
-in-process with fakes: ``CliRunner().invoke(app, [...], obj=Deps(git=FakeGit()))``.
+(git, Compose; mkcert later) travel in ``ctx.obj`` so tests can invoke the app in-process
+with fakes: ``CliRunner().invoke(app, [...], obj=Deps(git=FakeGit(), compose=FakeCompose()))``.
+Verbs other than ``up`` live in ``sandbox.commands.<verb>`` and are registered below with one
+``app.command`` line each; the helpers they share are in ``sandbox.context``.
 """
 
 import asyncio
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Final, NoReturn
+from typing import Annotated, Any
 
 import typer
 from typer.core import TyperGroup
 
+from sandbox.commands.down import down
 from sandbox.config import load_config
+from sandbox.context import (
+    SET_META_KEY,
+    Deps,
+    current_set,
+    failure,
+    get_deps,
+    usage_error,
+    warn,
+)
 from sandbox.errors import SandboxError
-from sandbox.git import Git, SubprocessGit
 from sandbox.names import RESERVED_VERBS, validate_set_name
 from sandbox.platforms import ensure_supported_platform
 from sandbox.provisioner import Provisioner
 from sandbox.worktrees import WorktreeOutcome
-
-SET_META_KEY: Final = "sandbox.set"
-
-
-@dataclass
-class Deps:
-    """External collaborators, swappable for fakes in tests."""
-
-    git: Git = field(default_factory=SubprocessGit)
 
 
 class SetFirstGroup(TyperGroup):
@@ -41,21 +42,16 @@ class SetFirstGroup(TyperGroup):
             first = args[0]
             if first in RESERVED_VERBS:
                 if len(args) > 1 and args[1] in RESERVED_VERBS:
-                    _fail(f"{first!r} is a sandbox verb and cannot be used as a set name")
+                    usage_error(f"{first!r} is a sandbox verb and cannot be used as a set name")
             else:
                 try:
                     ctx.meta[SET_META_KEY] = validate_set_name(first)
                 except SandboxError as exc:
-                    _fail(str(exc))
+                    usage_error(str(exc))
                 args = args[1:]
                 if not args:
-                    _fail(f"missing verb: sandbox {first} <verb>")
+                    usage_error(f"missing verb: sandbox {first} <verb>")
         return super().parse_args(ctx, args)
-
-
-def _fail(message: str) -> NoReturn:
-    typer.echo(f"error: {message}", err=True)
-    raise typer.Exit(code=2)
 
 
 app = typer.Typer(
@@ -74,27 +70,9 @@ def _root(ctx: typer.Context) -> None:
     try:
         ensure_supported_platform()
     except SandboxError as exc:
-        _fail(str(exc))
+        usage_error(str(exc))
     if ctx.obj is None:
         ctx.obj = Deps()
-
-
-def current_set(ctx: typer.Context, verb: str) -> str:
-    name = ctx.meta.get(SET_META_KEY)
-    if not isinstance(name, str):
-        _fail(f"{verb} needs a set: sandbox SET {verb}")
-    return name
-
-
-def _deps(ctx: typer.Context) -> Deps:
-    deps = ctx.obj
-    if not isinstance(deps, Deps):
-        raise TypeError("sandbox CLI context object must be a Deps instance")
-    return deps
-
-
-def _warn(message: str) -> None:
-    typer.echo(f"warning: {message}", err=True)
 
 
 @app.command()
@@ -112,20 +90,22 @@ def up(
         typer.Argument(metavar="NAME...", show_default=False),
     ] = None,
 ) -> None:
-    """Create the set (or resume it) with a worktree per repo on agent/SET."""
+    """Create the set (or resume it): a worktree per repo on agent/SET, services healthy."""
     set_name = current_set(ctx, "up")
     if use_repos and not names:
-        _fail("--repos needs at least one repo name: sandbox SET up --repos NAME...")
+        usage_error("--repos needs at least one repo name: sandbox SET up --repos NAME...")
     if names and not use_repos:
-        _fail(f"unexpected argument(s) {' '.join(names)}: did you mean --repos {' '.join(names)}?")
+        usage_error(
+            f"unexpected argument(s) {' '.join(names)}: did you mean --repos {' '.join(names)}?"
+        )
     repos = names if use_repos else None
     try:
         config = load_config()
-        provisioner = Provisioner(config, _deps(ctx).git, _warn)
+        deps = get_deps(ctx)
+        provisioner = Provisioner(config, deps.git, deps.compose, warn)
         result = asyncio.run(provisioner.up(set_name, repos=repos, cwd=Path.cwd()))
     except SandboxError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+        failure(exc)
 
     typer.echo(f"set {result.set_name}: {result.set_dir}")
     typer.echo(f"  plan: {result.plan_file}{' (created)' if result.plan_created else ''}")
@@ -136,6 +116,13 @@ def up(
             WorktreeOutcome.EXISTING: "already present",
         }[worktree.outcome]
         typer.echo(f"  {worktree.repo}: {worktree.path} [{worktree.branch}, {detail}]")
+    if result.services:
+        typer.echo(f"  services: {', '.join(result.services)} healthy [{result.project}]")
+    else:
+        typer.echo("  services: none (no .sandbox/compose.yaml services)")
+
+
+app.command()(down)
 
 
 def main() -> None:

@@ -37,7 +37,7 @@ jobs:
       - run: uv run pytest -m "not integration"
 
   integration:
-    name: integration (real git, Linux)
+    name: integration (real git + Docker Compose, Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,4 +45,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
+      - run: docker compose version
+      # Pulled up front so a slow registry shows up here, not as a healthcheck timeout.
+      - run: docker pull mysql:8.4
       - run: uv run pytest -m integration

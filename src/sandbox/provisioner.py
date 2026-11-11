@@ -1,7 +1,9 @@
 """Provisioner: orchestrates ``up`` for one set.
 
-This walking-skeleton version resolves the plan, validates every repo before touching the
-filesystem, writes the plan (never overwriting one) and ensures one worktree per repo.
+``up`` resolves the plan, validates every repo (including its compose file) before touching
+the filesystem, writes the plan (never overwriting one), ensures one worktree per repo, then
+renders the set's Compose override and brings the repos' backing services up healthy as
+Compose project ``sandbox-<set>``. ``down`` stops that project and leaves worktrees alone.
 """
 
 import asyncio
@@ -9,14 +11,16 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from sandbox.compose import project_name
+from sandbox.compose.cli import Compose
+from sandbox.compose.override import OverrideContext, write_override
+from sandbox.compose.services import SANDBOX_DIRNAME, RepoCompose, load_repo_compose
 from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.names import agent_branch, validate_repo_name, validate_set_name
 from sandbox.plan import SetPlan, SetRepo, load_set_plan, plan_path, write_new_plan
 from sandbox.worktrees import WorktreeManager, WorktreeOutcome, WorktreeResult
-
-SANDBOX_DIRNAME = ".sandbox"
 
 Warn = Callable[[str], None]
 
@@ -28,12 +32,23 @@ class UpResult:
     plan_file: Path
     plan_created: bool
     worktrees: list[WorktreeResult]
+    project: str
+    # Service names started under `project`; empty for a worktree-only set.
+    services: list[str]
+
+
+@dataclass(frozen=True)
+class DownResult:
+    set_name: str
+    set_dir: Path
+    project: str
 
 
 class Provisioner:
-    def __init__(self, config: Config, git: Git, warn: Warn) -> None:
+    def __init__(self, config: Config, git: Git, compose: Compose, warn: Warn) -> None:
         self._config = config
         self._git = git
+        self._compose = compose
         self._warn = warn
         self._worktrees = WorktreeManager(git, config.lock_dir)
 
@@ -59,6 +74,7 @@ class Provisioner:
 
         # Everything that can fail cheaply is checked before anything is created.
         await self._validate_repos(plan, branch)
+        repo_composes = _load_composes(plan)
 
         set_dir.mkdir(parents=True, exist_ok=True)
         plan_created = False
@@ -79,7 +95,23 @@ class Provisioner:
                     f"{result.repo}: reusing existing branch {result.branch}; "
                     f"base {result.base!r} from the plan was ignored"
                 )
-        return UpResult(set_name, set_dir, plan_file, plan_created, worktrees)
+
+        project = project_name(set_name)
+        services = sorted({service for rc in repo_composes for service in rc.services})
+        if services:
+            override = write_override(OverrideContext(set_name, set_dir, repo_composes))
+            await self._compose.up(project, [*(rc.file for rc in repo_composes), override])
+        return UpResult(set_name, set_dir, plan_file, plan_created, worktrees, project, services)
+
+    async def down(self, set_name: str) -> DownResult:
+        """Stop the set's containers and remove its network and volumes; keep worktrees."""
+        validate_set_name(set_name)
+        set_dir = self.set_dir(set_name)
+        if not plan_path(set_dir).exists():
+            raise SandboxError(f"no set {set_name!r}: {plan_path(set_dir)} does not exist")
+        project = project_name(set_name)
+        await self._compose.down(project)
+        return DownResult(set_name, set_dir, project)
 
     async def _plan_from_directory(self, cwd: Path, names: Sequence[str]) -> SetPlan:
         """Resolve ``--repos`` names against ``cwd``, pinning absolute sources and bases."""
@@ -157,6 +189,23 @@ class Provisioner:
         except* SandboxError as group:
             raise SandboxError(_join_messages(group)) from group
         return [task.result() for task in tasks]
+
+
+def _load_composes(plan: SetPlan) -> list[RepoCompose]:
+    """Each repo's compose file in repo-name order; repos without one are worktree-only."""
+    errors: list[str] = []
+    found: list[RepoCompose] = []
+    for name, repo in sorted(plan.repos.items()):
+        try:
+            repo_compose = load_repo_compose(name, repo.source)
+        except SandboxError as exc:
+            errors.append(str(exc))
+            continue
+        if repo_compose is not None:
+            found.append(repo_compose)
+    if errors:
+        raise SandboxError("\n".join(errors))
+    return found
 
 
 def _refuse_if_different(

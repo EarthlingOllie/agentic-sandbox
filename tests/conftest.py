@@ -11,8 +11,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner, Result
 
-from sandbox.cli import Deps, app
+from sandbox.cli import app
+from sandbox.compose.cli import Compose
+from sandbox.context import Deps
 from sandbox.git import Git
+from tests.fakes_compose import FakeCompose
 
 
 @dataclass
@@ -63,5 +66,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     return environment
 
 
-def invoke(args: Sequence[str], git: Git) -> Result:
-    return CliRunner().invoke(app, list(args), obj=Deps(git=git))
+def invoke(args: Sequence[str], git: Git, compose: Compose | None = None) -> Result:
+    """Run the CLI in-process. Compose defaults to a fake so git-only tests need no Docker."""
+    deps = Deps(git=git, compose=compose if compose is not None else FakeCompose())
+    return CliRunner().invoke(app, list(args), obj=deps)

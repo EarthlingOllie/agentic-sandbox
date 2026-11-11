@@ -56,5 +56,5 @@ venv = ".venv"
 testpaths = ["tests"]
 addopts = ["--strict-markers", "-ra"]
 markers = [
-    "integration: exercises real external tools (git); Linux CI only",
+    "integration: exercises real external tools (git, Docker Compose); Linux CI only",
 ]
