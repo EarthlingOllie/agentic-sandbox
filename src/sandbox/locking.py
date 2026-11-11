@@ -1,4 +1,9 @@
-"""Cross-process advisory file locks (``flock``), usable from asyncio without blocking the loop."""
+"""Cross-process advisory file locks (``flock``), usable from asyncio without blocking the loop.
+
+Part of the ``sandbox-hosts`` helper bundle: standard library only, Python 3.9 compatible.
+"""
+
+from __future__ import annotations
 
 import asyncio
 import os

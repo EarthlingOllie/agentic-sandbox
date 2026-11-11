@@ -36,6 +36,7 @@ from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.leases import SetLease
 from sandbox.plan import SetPlan
+from sandbox.platforms import Host
 from sandbox.state import SetState, UpAction
 from sandbox.worktrees import WorktreeManager, WorktreeResult
 
@@ -67,6 +68,7 @@ class UpContext:
     # Writes the set's hosts block; None means the one the config selects.
     hosts: "HostsWriter | None" = None
     mkcert: Mkcert = field(default_factory=SubprocessMkcert)
+    host: Host = field(default_factory=Host)
     # Filled in by validation steps.
     repo_composes: list[RepoCompose] = field(default_factory=list[RepoCompose])
     services: list[str] = field(default_factory=list[str])
@@ -74,6 +76,8 @@ class UpContext:
     running: set[str] = field(default_factory=set[str])
     state: SetState = SetState.ABSENT
     action: UpAction = UpAction.PROVISION
+    # macOS: how many of the pool's /24s have lo0 aliases (None: no limit, as on Linux).
+    alias_blocks: int | None = None
     # The set's loopback IP lease (None when it has no services).
     lease: SetLease | None = None
     # The repos' HTTPS web apps, and the mkcert CA certificate (None without a web app).

@@ -32,10 +32,14 @@ class SetLease:
 
 
 class LeaseStore:
-    def __init__(self, path: Path, lock_path: Path, pool: IPv4Network) -> None:
+    def __init__(
+        self, path: Path, lock_path: Path, pool: IPv4Network, max_blocks: int | None = None
+    ) -> None:
         self._path = path
         self._lock_path = lock_path
         self._pool = pool
+        # macOS: only the pool's first `max_blocks` /24s have lo0 aliases (`sandbox setup`).
+        self._max_blocks = max_blocks
 
     def read(self, set_name: str) -> SetLease | None:
         """The set's current lease, without leasing anything (a lock-free snapshot)."""
@@ -77,9 +81,17 @@ class LeaseStore:
 
     def _free_block(self, leases: dict[str, SetLease]) -> IPv4Network:
         taken = {lease.block for lease in leases.values()}
-        for block in self._pool.subnets(new_prefix=BLOCK_PREFIX):
+        blocks = list(self._pool.subnets(new_prefix=BLOCK_PREFIX))[: self._max_blocks]
+        for block in blocks:
             if block not in taken:
                 return block
+        if self._max_blocks is not None:
+            raise SandboxError(
+                f"all {len(blocks)} loopback alias blocks ({blocks[0]} to {blocks[-1]}) are "
+                "leased to other sets; rerun setup with a larger pool, e.g. "
+                f"`sudo sandbox setup --sets {2 * len(blocks)}`, or free blocks with "
+                "`sandbox prune`"
+            )
         raise SandboxError(
             f"no free /{BLOCK_PREFIX} left in {self._pool}: every block is leased to a set; "
             "free some with `sandbox prune`, or widen `ip_pool` in the config"

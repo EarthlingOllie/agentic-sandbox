@@ -5,7 +5,8 @@
 - ``VALIDATION_STEPS`` check every repo, its ``.sandbox/`` and compose file, deduplicate
   same-named services across repos (``sandbox.compose.dedup``), check the agent override
   and its image (``sandbox.agent_override``), check web apps, hostname clashes and the
-  mkcert CA (``sandbox.web``), check init hooks target the set's services
+  mkcert CA (``sandbox.web``), check what ``sudo sandbox setup`` installs
+  (``sandbox.preflight``), check init hooks target the set's services
   (``sandbox.hooks``), then observe the set's state.
   Nothing is created until all of them pass.
 - The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
@@ -50,6 +51,8 @@ from sandbox.plan import (
     plan_path,
     write_new_plan,
 )
+from sandbox.platforms import Host
+from sandbox.preflight import check_prerequisites
 from sandbox.state import UpAction, decide, observe
 from sandbox.web import check_web_apps, issue_certificate
 from sandbox.worktrees import WorktreeManager, WorktreeOutcome, WorktreeResult
@@ -206,6 +209,7 @@ VALIDATION_STEPS: Final[list[Step]] = [
     Step("dedup", _dedup_services),
     Step("web-apps", check_web_apps),
     Step("agent-override", check_agent_override),
+    Step("prerequisites", check_prerequisites),
     Step("ip-leases", lease_ips),
     Step("init-hooks", check_hooks),
     # Register further checks (hostname clashes, prerequisites) above this line.
@@ -234,8 +238,10 @@ class Provisioner:
         images: ImageProbe | None = None,
         hosts: HostsWriter | None = None,
         mkcert: Mkcert | None = None,
+        host: Host | None = None,
     ) -> None:
         self._config = config
+        self._host = host if host is not None else Host()
         self._mkcert = mkcert if mkcert is not None else SubprocessMkcert()
         self._hosts = hosts if hosts is not None else hosts_writer(config)
         self._images = images if images is not None else DockerImageProbe()
@@ -291,6 +297,7 @@ class Provisioner:
             images=self._images,
             hosts=self._hosts,
             mkcert=self._mkcert,
+            host=self._host,
         )
         await validate(VALIDATION_STEPS, ctx)
         if ctx.action is not UpAction.NOOP:

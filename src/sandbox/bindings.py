@@ -26,9 +26,12 @@ class Binding:
     ports: tuple[ContainerPort, ...]
 
 
-def lease_store(config: Config) -> LeaseStore:
+def lease_store(config: Config, max_blocks: int | None = None) -> LeaseStore:
     return LeaseStore(
-        config.state_dir / LEASE_FILENAME, config.lock_dir / "leases.lock", config.ip_pool
+        config.state_dir / LEASE_FILENAME,
+        config.lock_dir / "leases.lock",
+        config.ip_pool,
+        max_blocks,
     )
 
 
@@ -37,7 +40,7 @@ async def lease_ips(ctx: UpContext) -> None:
     if not ctx.graph.services:
         return
     hostnames = [hostname(name, ctx.set_name) for name in ctx.graph.names()]
-    ctx.lease = await lease_store(ctx.config).lease(ctx.set_name, hostnames)
+    ctx.lease = await lease_store(ctx.config, ctx.alias_blocks).lease(ctx.set_name, hostnames)
 
 
 def service_ips(

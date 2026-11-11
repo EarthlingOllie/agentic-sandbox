@@ -15,6 +15,7 @@ from sandbox.compose.cli import Compose, SubprocessCompose
 from sandbox.docker import Docker, SubprocessDocker
 from sandbox.errors import SandboxError
 from sandbox.git import Git, SubprocessGit
+from sandbox.platforms import Host
 
 SET_META_KEY: Final = "sandbox.set"
 
@@ -28,6 +29,7 @@ class Deps:
     images: ImageProbe = field(default_factory=DockerImageProbe)
     docker: Docker = field(default_factory=SubprocessDocker)
     mkcert: Mkcert = field(default_factory=SubprocessMkcert)
+    host: Host = field(default_factory=Host)
 
 
 def usage_error(message: str) -> NoReturn:

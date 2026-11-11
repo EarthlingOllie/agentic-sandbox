@@ -22,6 +22,7 @@ from sandbox.commands.destroy import destroy
 from sandbox.commands.down import down
 from sandbox.commands.prune import prune
 from sandbox.commands.save import save
+from sandbox.commands.setup import setup
 from sandbox.commands.sh import sh
 from sandbox.commands.status import status
 from sandbox.commands.templates import templates
@@ -136,7 +137,13 @@ def up(
         )
         deps = get_deps(ctx)
         provisioner = Provisioner(
-            config, deps.git, deps.compose, warn, images=deps.images, mkcert=deps.mkcert
+            config,
+            deps.git,
+            deps.compose,
+            warn,
+            images=deps.images,
+            mkcert=deps.mkcert,
+            host=deps.host,
         )
         result = asyncio.run(
             provisioner.up(
@@ -184,6 +191,7 @@ app.command()(claude)
 app.command()(status)
 app.command()(prune)
 app.command()(destroy)
+app.command()(setup)
 
 
 def main() -> None:

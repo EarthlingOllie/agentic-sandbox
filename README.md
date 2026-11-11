@@ -298,6 +298,52 @@ root). On Linux, `destroy` deletes those from a throwaway root container
 (`docker run --rm ubuntu:24.04 ...`, the default agent image's base), so sudo is never
 needed. On macOS Docker Desktop maps container files to the developer, so this never arises.
 
+## Setup
+
+Everything that needs root is installed once, after which `sandbox` runs unprivileged:
+
+```console
+$ sudo sandbox setup              # or: sudo "$(command -v sandbox)" setup, if sudo's PATH lacks it
+sandbox setup installed:
+  hosts helper: /usr/local/bin/sandbox-hosts (root-owned), runnable by me without a password (sudoers rule /etc/sudoers.d/sandbox-hosts, this helper only)
+  loopback: no loopback setup needed on Linux (127.0.0.0/8 is local)
+  mkcert: CA installed for me (`mkcert -install` as me)
+$ sudo sandbox setup --uninstall
+```
+
+- **Hosts helper.** `sandbox-hosts` (see [Hosts file](#hosts-file)) is installed root-owned
+  at `/usr/local/bin/sandbox-hosts`. It runs under the system Python (`/usr/bin/python3`,
+  3.9 or newer) with `-I -S`, from a root-owned copy of the few standard-library-only modules
+  it needs in `/usr/local/lib/sandbox-hosts/`, so nothing you can write (a virtualenv,
+  site-packages, `PYTHONPATH`) ever runs as root. A NOPASSWD sudoers rule
+  (`/etc/sudoers.d/sandbox-hosts`, checked with `visudo -c` first) lets you, and only you,
+  run exactly that file.
+- **macOS loopback pool.** On macOS only 127.0.0.1 itself answers on `lo0`, so setup
+  installs a launchd job (`/Library/LaunchDaemons/sandbox.loopback-aliases.plist`) that
+  adds an `lo0` alias for every address of the first `--sets N` /24 blocks of `ip_pool` at
+  boot (default 16, so 16 sets can run at once), and adds them right away too. Rerunning setup resizes the pool. On
+  Linux no loopback setup is performed: the whole of 127.0.0.0/8 already works.
+- **mkcert CA.** `mkcert -install` runs as you (`SUDO_USER`), never as root, so the CA lands
+  in your own CAROOT and your browser trusts it. mkcert must be on sudo's `PATH`.
+- Setup reads **your** config (`~/.config/sandbox/config.yaml`) and refuses, before
+  installing anything, if any address in `ip_pool` is already in use: assigned to a network
+  interface, or mapped by a hosts-file line outside sandbox's own blocks.
+- `--uninstall` removes the helper, its sudoers rule and the launchd job (and the aliases),
+  but leaves the mkcert CA, which other tools may use; it prints `mkcert -uninstall` for you
+  to run yourself if you want it gone.
+
+`up` checks all of this before it creates anything (even before leasing IPs), and names
+what is missing: the hosts helper or its sudoers rule (when `hosts_file` is unset), on macOS
+the alias pool, and for a set with a web app the mkcert `rootCA.pem`. Sets without services
+need none of it. On macOS a set only leases blocks that are aliased; when every one is
+taken, `up` fails and suggests rerunning setup with a larger `--sets`.
+
+The macOS launchd/`lo0` path is unit-tested against a fake host (the generated plist and
+its alias script are run with a stand-in `ifconfig`), but only a person on a Mac with sudo
+can verify it for real: run `sudo sandbox setup --sets 2`, check `ifconfig lo0` lists
+127.42.0.1-127.42.1.254, reboot and check again, run `up` for a set with services, then
+`sudo sandbox setup --uninstall` and check the aliases and the plist are gone.
+
 ## Configuration
 
 `~/.config/sandbox/config.yaml` (override the path with `SANDBOX_CONFIG`). Every key is
@@ -325,8 +371,8 @@ touched; `down` (and a rolled-back `up`) removes the block.
 # end sandbox:jira-123
 ```
 
-`sandbox` writes it non-interactively through `sudo -n sandbox-hosts`, a small helper that
-`sudo sandbox setup` installs root-owned, with a NOPASSWD sudoers rule scoped to it. The
+`sandbox` writes it non-interactively through `sudo -n /usr/local/bin/sandbox-hosts`, a small
+helper that `sudo sandbox setup` installs root-owned (see [Setup](#setup)), with a NOPASSWD sudoers rule scoped to it. The
 helper only ever edits `/etc/hosts`, rewrites only the named set's block under an
 exclusive `flock` (so concurrent sets never corrupt the file), and refuses any IP outside
 the set's own /24 and any name that is not a `<label>.<set>.test` hostname, so it cannot be

@@ -1,7 +1,7 @@
 """``sandbox-hosts``: the small privileged helper that edits ``/etc/hosts`` for sandbox.
 
-``sudo sandbox setup`` (ticket 18) installs it root-owned with a NOPASSWD sudoers rule
-scoped to this binary, and ``sandbox`` runs it as ``sudo -n sandbox-hosts ...``::
+``sudo sandbox setup`` installs it root-owned at ``/usr/local/bin/sandbox-hosts``, with a
+NOPASSWD sudoers rule scoped to that file, and ``sandbox`` runs it through ``sudo -n``::
 
     sandbox-hosts write SET BLOCK HOSTNAME=IP...   # make SET's block hold exactly these
     sandbox-hosts remove SET                       # drop SET's block
@@ -9,8 +9,14 @@ scoped to this binary, and ``sandbox`` runs it as ``sudo -n sandbox-hosts ...``:
 It always edits ``/etc/hosts`` (the path is not an argument, so a caller cannot aim root at
 another file), rewrites only the named set's ``# sandbox:<set>`` block under an exclusive
 ``flock``, and refuses any IP outside the set's loopback /24 and any name that is not a
-``<label>.<set>.test`` hostname (:func:`sandbox.hosts.check_entries`).
+``<label>.<set>.test`` hostname (:func:`sandbox.hosts_block.check_entries`).
+
+The installed copy runs under the system's Python with ``-I -S`` from a root-owned bundle
+(``sandbox.setup``), so this module imports the standard library and stdlib-only sandbox
+modules only, and stays compatible with Python 3.9.
 """
+
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -21,7 +27,7 @@ from pathlib import Path
 from typing import Final, NoReturn
 
 from sandbox.errors import SandboxError
-from sandbox.hosts import SYSTEM_HOSTS_FILE, check_entries, update_hosts_file
+from sandbox.hosts_block import SYSTEM_HOSTS_FILE, check_entries, update_hosts_file
 from sandbox.names import validate_set_name
 
 # Root's lock, beside other system run-time state (/var/run exists on Linux and macOS).

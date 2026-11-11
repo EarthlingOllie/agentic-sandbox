@@ -17,6 +17,7 @@ from sandbox.compose.cli import Compose
 from sandbox.context import Deps
 from sandbox.docker import Docker, SubprocessDocker
 from sandbox.git import Git
+from sandbox.platforms import Host
 from tests.fakes_compose import FakeCompose
 from tests.fakes_docker import FakeDocker
 
@@ -40,6 +41,13 @@ class Env:
         if opt_in:
             (path / ".sandbox").mkdir()
         return path
+
+
+@pytest.fixture(autouse=True)
+def _linux_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests see a Linux host unless they pass a ``Host`` (``tests.fakes_host``), so a unit
+    run on a Mac never reads that Mac's lo0 aliases or setup state."""
+    monkeypatch.setattr("sandbox.platforms.current_platform", lambda: "linux")
 
 
 @pytest.fixture
@@ -79,6 +87,7 @@ def invoke(
     compose: Compose | None = None,
     docker: Docker | None = None,
     mkcert: Mkcert | None = None,
+    host: Host | None = None,
 ) -> Result:
     """Run the CLI in-process. Compose defaults to a fake so git-only tests need no Docker;
     Docker queries default to a fake that reports what that Compose fake is running; mkcert
@@ -89,4 +98,6 @@ def invoke(
     deps = Deps(git=git, compose=compose, docker=docker)
     if mkcert is not None:
         deps.mkcert = mkcert
+    if host is not None:
+        deps.host = host
     return CliRunner().invoke(app, list(args), obj=deps)

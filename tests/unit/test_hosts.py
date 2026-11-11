@@ -32,7 +32,7 @@ class SudoHelper:
         self.calls.append(list(argv))
         if self.status is not None:
             return self.status, self.output
-        assert argv[:3] == ["sudo", "-n", "sandbox-hosts"]
+        assert argv[:3] == ["sudo", "-n", "/usr/local/bin/sandbox-hosts"]
         lock = self.hosts.with_name("hosts.lock")
         # In a thread, as the real helper runs in its own process (with its own event loop).
         status = await asyncio.to_thread(
@@ -65,9 +65,9 @@ def test_helper_writer_runs_sandbox_hosts_non_interactively(hosts: Path) -> None
     asyncio.run(writer.remove("jira-123"))
 
     assert sudo.calls == [
-        ["sudo", "-n", "sandbox-hosts", "write", "jira-123", "127.42.0.0/24",
+        ["sudo", "-n", "/usr/local/bin/sandbox-hosts", "write", "jira-123", "127.42.0.0/24",
          "mysql.jira-123.test=127.42.0.1"],
-        ["sudo", "-n", "sandbox-hosts", "remove", "jira-123"],
+        ["sudo", "-n", "/usr/local/bin/sandbox-hosts", "remove", "jira-123"],
     ]  # fmt: skip
     assert hosts.read_text() == OTHER
 
