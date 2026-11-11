@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from sandbox.git import GitCommandError
+from sandbox.git import GitCommandError, WorktreeStatus
 
 
 @dataclass
@@ -13,6 +13,13 @@ class FakeRepo:
     branches: set[str] = field(default_factory=lambda: {"main"})
     # branch -> worktree path, for branches checked out in a linked worktree
     checked_out: dict[str, Path] = field(default_factory=dict[str, Path])
+
+
+@dataclass
+class FakeWorktree:
+    branch: str | None
+    modified: bool = False
+    untracked: bool = False
 
 
 class FakeGit:
@@ -27,6 +34,7 @@ class FakeGit:
         self.add_delay = add_delay
         self.active_adds: dict[Path, int] = {}
         self.max_concurrent_adds: dict[Path, int] = {}
+        self.worktrees: dict[Path, FakeWorktree] = {}
 
     def add_repo(
         self, path: Path, *, current: str | None = "main", branches: set[str] | None = None
@@ -36,6 +44,9 @@ class FakeGit:
             repo.branches.add(current)
         self.repos[path.resolve()] = repo
         return repo
+
+    def worktree(self, path: Path) -> FakeWorktree:
+        return self.worktrees[path.resolve()]
 
     def repo(self, path: Path) -> FakeRepo:
         try:
@@ -82,5 +93,12 @@ class FakeGit:
             path.mkdir(parents=True, exist_ok=True)
             (path / ".git").write_text(f"gitdir: {key}/.git/worktrees/{path.name}\n")
             state.checked_out[branch] = path
+            self.worktrees[path.resolve()] = FakeWorktree(branch)
         finally:
             self.active_adds[key] -= 1
+
+    async def worktree_status(self, path: Path) -> WorktreeStatus | None:
+        worktree = self.worktrees.get(path.resolve())
+        if worktree is None or not (path / ".git").exists():
+            return None
+        return WorktreeStatus(worktree.branch, worktree.modified, worktree.untracked)

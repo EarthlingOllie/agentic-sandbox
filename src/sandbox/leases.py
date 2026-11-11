@@ -41,6 +41,10 @@ class LeaseStore:
         """The set's current lease, without leasing anything (a lock-free snapshot)."""
         return self._load().get(set_name)
 
+    def read_all(self) -> dict[str, SetLease]:
+        """Every set's current lease, by set name (a lock-free snapshot)."""
+        return self._load()
+
     async def lease(self, set_name: str, hostnames: Iterable[str]) -> SetLease:
         """Lease the set's block (or keep it) and an IP for every hostname (or keep it)."""
         async with file_lock(self._lock_path):

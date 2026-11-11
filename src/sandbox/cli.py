@@ -21,6 +21,7 @@ from sandbox.commands.claude import claude
 from sandbox.commands.down import down
 from sandbox.commands.save import save
 from sandbox.commands.sh import sh
+from sandbox.commands.status import status
 from sandbox.commands.templates import templates
 from sandbox.config import load_config
 from sandbox.context import (
@@ -175,6 +176,7 @@ app.command()(save)
 app.command()(templates)
 app.command()(sh)
 app.command()(claude)
+app.command()(status)
 
 
 def main() -> None:

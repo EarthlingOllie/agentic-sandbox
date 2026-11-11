@@ -4,9 +4,9 @@
 
 **Blocked by:** 04 (rollback and state table), 05 (loopback IP leases)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] State is derived by reconciling set directories and the lease file against Docker labels (queried with the `docker` CLI, no SDK): running, stopped, partial, orphaned (leftover containers/leases with no set directory, or vice versa)
-- [ ] `sandbox status` lists all sets with state
-- [ ] `sandbox SET status` shows services with health, hostnames and IPs, and repos with branch and a dirty/untracked marker
-- [ ] Output models are Pydantic models shared by the table renderer and `--json`
+- [x] State is derived by reconciling set directories and the lease file against Docker labels (queried with the `docker` CLI, no SDK): running, stopped, partial, orphaned (leftover containers/leases with no set directory, or vice versa)
+- [x] `sandbox status` lists all sets with state
+- [x] `sandbox SET status` shows services with health, hostnames and IPs, and repos with branch and a dirty/untracked marker
+- [x] Output models are Pydantic models shared by the table renderer and `--json`

@@ -167,6 +167,37 @@ Proxy variables are honoured by `git`, `claude` and most tools, but nothing stop
 process from ignoring them: the agent stays on the set network, which has a route out.
 Enforced egress restriction is out of scope for the MVP.
 
+## Status
+
+`sandbox status` lists every set with its state; `sandbox SET status` shows one set's
+services (container state, health, hostname, leased IP) and repos (branch, plus `*` for
+uncommitted changes and `?` for untracked files). `--json` prints the same Pydantic models
+the tables are rendered from.
+
+```console
+$ sandbox status
+SET       STATE     DETAIL
+jira-123  running
+jira-456  partial   not running: redis
+spike-01  orphaned  2 containers and an IP lease with no set directory
+$ sandbox jira-123 status
+set jira-123: running [sandbox-jira-123]
+
+SERVICE  STATE    HEALTH   HOSTNAME             IP
+agent    running  -        -                    -
+mysql    running  healthy  mysql.jira-123.test  127.42.0.1
+
+REPO  BRANCH          CHANGES
+api   agent/jira-123  * uncommitted changes
+web   agent/jira-123  clean
+```
+
+States are reconciled from the set directories, the lease file and the containers Docker
+labels `sandbox.set=<set>` (queried with the `docker` CLI): **running** (every service and
+the agent running), **stopped** (a plan, nothing running), **partial** (some running) and
+**orphaned** (containers or an IP lease whose set has no plan, or a set directory without
+one).
+
 ## Configuration
 
 `~/.config/sandbox/config.yaml` (override the path with `SANDBOX_CONFIG`). Every key is

@@ -8,6 +8,13 @@ from typing import Protocol
 from sandbox.errors import SandboxError
 
 
+@dataclass(frozen=True)
+class WorktreeStatus:
+    branch: str | None  # None on a detached HEAD
+    modified: bool  # staged or unstaged changes to tracked files (or conflicts)
+    untracked: bool  # files git doesn't track and doesn't ignore
+
+
 class Git(Protocol):
     async def is_repository(self, path: Path) -> bool: ...
 
@@ -26,6 +33,11 @@ class Git(Protocol):
 
         With ``base``, the branch is created from it; without, the existing branch is used.
         """
+        ...
+
+    async def worktree_status(self, path: Path) -> WorktreeStatus | None:
+        """The worktree's branch and whether it has uncommitted or untracked changes, or
+        None when ``path`` is not a worktree (e.g. it was deleted)."""
         ...
 
 
@@ -97,3 +109,21 @@ class SubprocessGit:
             await self._check(repo, "worktree", "add", str(path), branch)
         else:
             await self._check(repo, "worktree", "add", "-b", branch, str(path), base)
+
+    async def worktree_status(self, path: Path) -> WorktreeStatus | None:
+        if not path.is_dir():
+            return None
+        result = await self._run(path, "status", "--porcelain=v2", "--branch")
+        if result.returncode != 0:
+            return None
+        branch: str | None = None
+        modified = untracked = False
+        for line in result.stdout.splitlines():
+            if line.startswith("# branch.head "):
+                head = line.removeprefix("# branch.head ")
+                branch = None if head == "(detached)" else head
+            elif line.startswith(("1 ", "2 ", "u ")):
+                modified = True
+            elif line.startswith("? "):
+                untracked = True
+        return WorktreeStatus(branch, modified, untracked)

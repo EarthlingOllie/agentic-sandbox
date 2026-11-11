@@ -11,6 +11,7 @@ from ipaddress import IPv4Address
 
 from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.network import ContainerPort, container_ports, hostname
+from sandbox.config import Config
 from sandbox.leases import LeaseStore, SetLease
 from sandbox.pipeline import UpContext
 
@@ -24,8 +25,7 @@ class Binding:
     ports: tuple[ContainerPort, ...]
 
 
-def lease_store(ctx: UpContext) -> LeaseStore:
-    config = ctx.config
+def lease_store(config: Config) -> LeaseStore:
     return LeaseStore(
         config.state_dir / LEASE_FILENAME, config.lock_dir / "leases.lock", config.ip_pool
     )
@@ -36,7 +36,7 @@ async def lease_ips(ctx: UpContext) -> None:
     if not ctx.graph.services:
         return
     hostnames = [hostname(name, ctx.set_name) for name in ctx.graph.names()]
-    ctx.lease = await lease_store(ctx).lease(ctx.set_name, hostnames)
+    ctx.lease = await lease_store(ctx.config).lease(ctx.set_name, hostnames)
 
 
 def service_ips(
