@@ -24,6 +24,7 @@ set jira-123: /home/me/sandbox/sets/jira-123
   agent: running [sandbox-jira-123]; open a shell: sandbox jira-123 sh
 $ sandbox jira-123 sh --repo api   # a shell in the agent, in /workspace/jira-123/api
 $ sandbox jira-123 sh mysql        # a shell in the mysql service container
+$ sandbox jira-123 claude          # Claude Code in the agent, in /workspace/jira-123
 $ sandbox jira-123 down
 set jira-123: sandbox-jira-123 stopped; worktrees kept in /home/me/sandbox/sets/jira-123
 ```
@@ -89,6 +90,31 @@ instead; an unknown name fails and points at `--repo`.
   the agent can see every branch of the repo); the host's `~/.claude/` at
   `/home/agent/.claude` with `CLAUDE_CONFIG_DIR=/home/agent/.claude`, so all sets share one
   login. Your main working trees and `~/.claude.json` are never mounted.
+
+### Claude Code in the agent
+
+`sandbox SET claude` runs Claude Code interactively in the set's agent, starting in
+`/workspace/<set>/`. It fails with a clear message (and the `up` command to run) if the set
+isn't running. Every set shares one Claude login through the `~/.claude/` mount: the first
+time no `~/.claude/.credentials.json` exists, sandbox says so and Claude Code leads you
+through `/login`, which writes `.credentials.json` into that directory; every other set
+then starts already logged in. sandbox keeps that file at mode `0600`.
+
+```console
+$ sandbox jira-123 claude    # first time: log in with /login
+$ sandbox jira-456 claude    # already logged in
+```
+
+Accepted trade-offs:
+
+- **Plaintext token on macOS.** Claude Code on a Mac host keeps its login in the Keychain,
+  which a Linux container cannot reach, so the agents log in separately and store their
+  token in plaintext in `~/.claude/.credentials.json` (owner-only, `0600`), where any process
+  running as you can read it. (On Linux hosts Claude Code already uses
+  this file.)
+- **Occasional forced re-login.** Concurrent sets share one token file. When two agents
+  refresh the token at the same moment, one refresh can invalidate the other's token, and
+  that session has to `/login` again. Logging in again from any set fixes it for all.
 
 Linux and macOS only.
 

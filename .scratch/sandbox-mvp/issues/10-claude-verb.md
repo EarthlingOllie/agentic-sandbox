@@ -4,9 +4,9 @@
 
 **Blocked by:** 09 (agent container and `sh`)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `sandbox SET claude` runs Claude Code interactively in the agent container, starting in `/workspace/<set>/`
-- [ ] Fails with a clear message if the set isn't running
-- [ ] When no credentials exist in the shared config, the first run leads the user through `/login`, which writes `.credentials.json` (0600) into the shared mount; a second set then starts already logged in
-- [ ] Docs record the accepted trade-offs: plaintext token on macOS, occasional forced re-login on concurrent refresh
+- [x] `sandbox SET claude` runs Claude Code interactively in the agent container, starting in `/workspace/<set>/`
+- [x] Fails with a clear message if the set isn't running
+- [ ] When no credentials exist in the shared config, the first run leads the user through `/login`, which writes `.credentials.json` (0600) into the shared mount; a second set then starts already logged in — *needs manual verification with a real Claude account (implemented; covered by fakes in `tests/unit/test_claude.py`)*
+- [x] Docs record the accepted trade-offs: plaintext token on macOS, occasional forced re-login on concurrent refresh

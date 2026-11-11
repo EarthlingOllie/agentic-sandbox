@@ -16,6 +16,7 @@ from typing import Annotated, Any
 import typer
 from typer.core import TyperGroup
 
+from sandbox.commands.claude import claude
 from sandbox.commands.down import down
 from sandbox.commands.save import save
 from sandbox.commands.sh import sh
@@ -168,6 +169,7 @@ app.command()(down)
 app.command()(save)
 app.command()(templates)
 app.command()(sh)
+app.command()(claude)
 
 
 def main() -> None:
