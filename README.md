@@ -156,10 +156,20 @@ instead; an unknown name fails and points at `--repo`.
 - **Mounts** (read-write binds unless noted): the set directory at `/workspace/<set>/`
   (its `sandbox.yaml` read-only); each source repo's `.git` at its exact host path,
   because a worktree's `.git` file points there (so the agent can see every branch of the
-  repo and commit), with `.git/config` read-only: sandbox runs git on the host against
-  that repo, so a setting the agent wrote there (a filter, `core.fsmonitor`) would run on
-  the host. The agent can't change repo config (`git config`, `git push -u`); host-side
-  git also ignores hooks, fsmonitor and any `.git` or `commondir` file the agent planted; the host's `~/.claude/` at
+  repo), **read-only**, with read-write binds over only what committing, branching and
+  fetching in the set's worktree write: `objects/`, `refs/`, `logs/` (`reftable/` in
+  repos that use it) and the set's own `worktrees/<name>/`. Config and hooks there are
+  what git on the host reads, so the agent can't change them, even after host git
+  replaces `.git/config` (it renames a new file over it). So in the agent `git config`,
+  `git push -u`, deleting a packed branch and `git gc` fail; commit, branch, fetch and
+  push work. Independently, every git command sandbox runs on the host uses isolated
+  config (no system or global config, nothing from `GIT_*` variables, and hooks,
+  fsmonitor, editors, pagers and other program-running settings pinned off), reads
+  nothing from a worktree's git dir but its `HEAD` and index, and ignores any `.git` or
+  `commondir` file the agent planted. (So filters such as Git LFS's, configured in your
+  global config, don't run when sandbox creates a worktree.) The worktrees themselves are
+  the agent's: treat running git in one on the host like running it in a repo you
+  cloned from a stranger. Also: the host's `~/.claude/` at
   `/home/agent/.claude` with `CLAUDE_CONFIG_DIR=/home/agent/.claude`, so all sets share one
   login. Your main working trees and `~/.claude.json` are never mounted. In a set with a
   web app, the mkcert CA's `rootCA.pem` is also mounted read-only (see above).

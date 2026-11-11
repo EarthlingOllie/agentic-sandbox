@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -68,40 +70,132 @@ class GitCommandError(SandboxError):
     pass
 
 
-# Settings in a repo's config that would make host-side git run a program. The agent can
-# write a source's ``.git`` (it is mounted read-write), so these are pinned on every call;
-# filters and the rest of ``.git/config`` are covered by the agent seeing it read-only.
-_NO_AGENT_CODE = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
+# Host-side git never runs code the agent chose. Two layers, either of which suffices for
+# what git reads from config:
+#
+# * The agent can't write any config host git reads: the agent mounts a source's ``.git``
+#   read-only, with only the directories it needs to commit, branch and fetch read-write
+#   (see sandbox.compose.agent), and :meth:`SubprocessGit.worktree_status` never reads the
+#   one config file in those (a worktree's ``config.worktree``).
+# * Every call runs with isolated config: no system or global config, nothing from the
+#   environment, and every setting that names a program to run pinned off. A filter's name
+#   is the agent's to choose (via ``.gitattributes``), so filters can't be pinned; nor can
+#   ``include.path``: they are covered by the first layer.
+_PINNED_CONFIG: tuple[tuple[str, str], ...] = (
+    ("core.hooksPath", os.devnull),
+    ("core.fsmonitor", "false"),
+    ("core.sshCommand", "false"),
+    ("core.gitProxy", ""),
+    ("core.askPass", ""),
+    ("core.pager", "cat"),
+    ("core.editor", "false"),
+    ("core.alternateRefsCommand", ""),
+    ("sequence.editor", "false"),
+    ("diff.external", ""),
+    ("diff.ignoreSubmodules", "all"),
+    ("submodule.recurse", "false"),
+    ("status.submoduleSummary", "false"),
+    ("credential.helper", ""),
+    ("protocol.allow", "never"),
+    ("log.showSignature", "false"),
+    ("gc.auto", "0"),
+    ("maintenance.auto", "false"),
+)
+
+# Git's environment variables name config, a repository or a program; only identity is kept.
+_KEPT_GIT_ENV = ("GIT_AUTHOR_", "GIT_COMMITTER_")
 
 
-def _worktree_git_dir(repo: Path, path: Path) -> Path | None:
-    """The git dir ``path``'s ``.git`` file names, if it is one of ``repo``'s worktrees.
+def _isolated_environment(env: dict[str, str]) -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_") or key.startswith(_KEPT_GIT_ENV)
+    }
+    pins = {"GIT_CONFIG_COUNT": str(len(_PINNED_CONFIG))}
+    for index, (key, value) in enumerate(_PINNED_CONFIG):
+        pins[f"GIT_CONFIG_KEY_{index}"] = key
+        pins[f"GIT_CONFIG_VALUE_{index}"] = value
+    return {
+        **environment,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        **pins,
+        **env,
+    }
 
-    The agent can rewrite that file, so its target is only trusted when it is a direct
-    child of ``repo``'s own ``.git/worktrees``.
+
+def worktree_git_dir(repo: Path, path: Path) -> Path | None:
+    """The git dir of ``repo``'s worktree at ``path``, or None if ``path`` isn't one.
+
+    The agent can rewrite ``path/.git`` (and replace ``path`` with a symlink), so the target
+    is only trusted when it is a direct child of ``repo``'s own ``.git/worktrees`` whose
+    ``gitdir`` file (which the agent can only write for its own worktrees) points back at
+    ``path/.git``.
     """
     link = path / ".git"
-    if link.is_symlink() or not link.is_file():
+    if path.is_symlink() or link.is_symlink() or not link.is_file():
         return None
-    try:
-        text = link.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
+    text = _read_regular(link)
+    if text is None or not text.startswith("gitdir: "):
         return None
-    if not text.startswith("gitdir: "):
-        return None
-    target = Path(os.path.normpath(path / text.removeprefix("gitdir: ")))
+    target = Path(os.path.normpath(path / text.strip().removeprefix("gitdir: ")))
     worktrees = (repo / ".git" / "worktrees").resolve()
     if target.parent.resolve() != worktrees or target.name in ("", ".", ".."):
         return None
-    return worktrees / target.name
+    git_dir = worktrees / target.name
+    if git_dir.is_symlink() or not git_dir.is_dir():
+        return None
+    backlink = _read_regular(git_dir / "gitdir")
+    if backlink is None or Path(backlink.strip()).resolve() != link.resolve():
+        return None
+    return git_dir
+
+
+def _read_regular(path: Path) -> str | None:
+    data = _read_regular_bytes(path)
+    if data is None:
+        return None
+    try:
+        return data.decode()
+    except UnicodeDecodeError:
+        return None
+
+
+def _read_regular_bytes(path: Path) -> bytes | None:
+    """``path``'s content if it is a regular file (not a symlink, FIFO or device)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as file:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        return file.read()
+
+
+def _snapshot_git_dir(repo: Path, git_dir: Path, into: Path) -> bool:
+    """Copy what ``git status`` needs from a worktree's git dir (HEAD and the index), so
+    status reads nothing else the agent wrote there, its ``config.worktree`` included."""
+    head = _read_regular_bytes(git_dir / "HEAD")
+    if head is None:
+        return False
+    (into / "HEAD").write_bytes(head)
+    # Git's ref store takes the common dir from this file, not from GIT_COMMON_DIR.
+    (into / "commondir").write_text(f"{repo.absolute() / '.git'}\n")
+    for name in ["index", *(p.name for p in git_dir.glob("sharedindex.*"))]:
+        data = _read_regular_bytes(git_dir / name)
+        if data is not None:
+            (into / name).write_bytes(data)
+    return True
 
 
 class SubprocessGit:
     """Runs the real ``git`` binary, never trusting what the agent can write.
 
     Every call names its git dir and common dir explicitly (so a ``commondir`` or ``.git``
-    file the agent planted can't point git at config of its choosing) and pins off hooks
-    and fsmonitor.
+    file the agent planted can't point git at config of its choosing) and runs with
+    isolated config (see ``_PINNED_CONFIG``).
     """
 
     async def _run(self, repo: Path, *args: str) -> GitResult:
@@ -119,19 +213,13 @@ class SubprocessGit:
         )
 
     async def _exec(self, cwd: Path, env: dict[str, str], *args: str) -> GitResult:
-        environment = {
-            key: value
-            for key, value in os.environ.items()
-            if key not in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE")
-        }
         try:
             process = await asyncio.create_subprocess_exec(
                 "git",
                 "-C",
                 str(cwd),
-                *_NO_AGENT_CODE,
                 *args,
-                env={**environment, **env},
+                env=_isolated_environment(env),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -183,15 +271,26 @@ class SubprocessGit:
     async def worktree_status(self, repo: Path, path: Path) -> WorktreeStatus | None:
         if not path.is_dir():
             return None
-        git_dir = _worktree_git_dir(repo, path)
+        git_dir = worktree_git_dir(repo, path)
         if git_dir is None:
             return None
-        env = {
-            "GIT_DIR": str(git_dir),
-            "GIT_COMMON_DIR": str(repo / ".git"),
-            "GIT_WORK_TREE": str(path),
-        }
-        result = await self._exec(path, env, "status", "--porcelain=v2", "--branch")
+        with tempfile.TemporaryDirectory(prefix="sandbox-status-") as snapshot:
+            if not _snapshot_git_dir(repo, git_dir, Path(snapshot)):
+                return None
+            env = {
+                "GIT_DIR": snapshot,
+                "GIT_COMMON_DIR": str(repo / ".git"),
+                "GIT_WORK_TREE": str(path),
+            }
+            result = await self._exec(
+                path,
+                env,
+                "--no-optional-locks",
+                "status",
+                "--porcelain=v2",
+                "--branch",
+                "--ignore-submodules=all",
+            )
         if result.returncode != 0:
             return None
         branch: str | None = None
@@ -213,7 +312,17 @@ class SubprocessGit:
         return WorktreeStatus(branch, modified, untracked, tuple(changes))
 
     async def remove_worktree(self, repo: Path, path: Path, *, force: bool) -> None:
-        await self._check(repo, "worktree", "remove", *(["--force"] if force else []), str(path))
+        if not force:
+            # ``git worktree remove`` would check for changes by running ``git status`` on
+            # the worktree's own git dir, whose config.worktree the agent writes.
+            status = await self.worktree_status(repo, path)
+            if status is None:
+                raise GitCommandError(f"git worktree remove: can't tell whether {path} is clean")
+            if status.modified or status.untracked:
+                raise GitCommandError(
+                    f"git worktree remove: {path} contains modified or untracked files"
+                )
+        await self._check(repo, "worktree", "remove", "--force", str(path))
 
     async def unpushed_commits(self, repo: Path, branch: str) -> list[str]:
         ref = f"refs/heads/{branch}"

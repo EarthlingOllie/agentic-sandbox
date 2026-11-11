@@ -1,9 +1,9 @@
 """Host-side git never runs code the agent wrote.
 
-The agent mounts each source repo's ``.git`` read-write (and the set directory, which holds
-each worktree's ``.git`` file), so anything git reads from there is the agent's to choose.
-These tests plant what an agent could and check that :class:`SubprocessGit` runs none of
-it; the agent mount of ``.git/config`` being read-only is checked in tests/unit/test_agent.py.
+Defence in depth: these tests plant settings straight into a source's ``.git`` (which the
+agent mounts read-only, apart from what committing writes) and into the set directory
+(which holds each worktree's ``.git`` file), and check that :class:`SubprocessGit` runs none
+of it. The agent's mounts are checked in tests/integration/test_agent_git_isolation.py.
 """
 
 import asyncio

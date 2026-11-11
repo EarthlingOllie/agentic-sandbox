@@ -81,19 +81,20 @@ def test_set_dir_and_each_repos_git_dir_are_mounted_but_not_the_working_tree(
         "/workspace/jira-123": str(env.set_dir("jira-123")),
         "/workspace/jira-123/sandbox.yaml": str(env.set_dir("jira-123") / "sandbox.yaml"),
         f"{api}/.git": f"{api}/.git",
-        f"{api}/.git/config": f"{api}/.git/config",
+        f"{api}/.git/logs": f"{api}/.git/logs",
         f"{web}/.git": f"{web}/.git",
-        f"{web}/.git/config": f"{web}/.git/config",
+        f"{web}/.git/logs": f"{web}/.git/logs",
         "/home/agent/.claude": str(Path.home() / ".claude"),
     }
-    # The plan pins the agent override (see test_agent_override); a repo's config is what
-    # host-side git reads, so an agent that could edit it (a filter, say) would run code on
-    # the host at the next `status` or `destroy`.
+    # The plan pins the agent override (see test_agent_override); a repo's .git holds what
+    # host-side git reads (config, hooks), so an agent that could edit it (a filter, say)
+    # would run code on the host at the next `status` or `destroy`. Only what committing
+    # writes is read-write (see tests/integration/test_agent_git_isolation.py).
     read_only = [volume["target"] for volume in agent["volumes"] if volume.get("read_only")]
     assert read_only == [
         "/workspace/jira-123/sandbox.yaml",
-        f"{api}/.git/config",
-        f"{web}/.git/config",
+        f"{api}/.git",
+        f"{web}/.git",
     ]
 
 
