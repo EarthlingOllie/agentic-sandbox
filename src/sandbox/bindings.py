@@ -6,6 +6,7 @@ it is never rolled back, and only ``prune`` releases it. Running it before anyth
 means an exhausted pool fails ``up`` cleanly, and the no-op path can still print bindings.
 """
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Address
 
@@ -52,16 +53,20 @@ def service_ips(
     }
 
 
-def bindings(set_name: str, graph: ServiceGraph, lease: SetLease | None) -> list[Binding]:
-    ips = service_ips(set_name, graph, lease)
-    return [
-        Binding(
-            hostname(name, set_name),
-            ip,
-            tuple(container_ports(name, graph.services[name].definition)),
-        )
-        for name, ip in ips.items()
-    ]
+def bindings(
+    set_name: str,
+    graph: ServiceGraph,
+    lease: SetLease | None,
+    extra_hostnames: Mapping[str, Sequence[str]] | None = None,
+) -> list[Binding]:
+    """Each service's hostname, then its extra hostnames (service name -> names, e.g. a web
+    app's ``hosts``), on the service's IP with its ports."""
+    found: list[Binding] = []
+    for name, ip in service_ips(set_name, graph, lease).items():
+        ports = tuple(container_ports(name, graph.services[name].definition))
+        for host in (hostname(name, set_name), *(extra_hostnames or {}).get(name, ())):
+            found.append(Binding(host, ip, ports))
+    return found
 
 
 def format_bindings(found: list[Binding]) -> list[str]:

@@ -19,7 +19,7 @@ from sandbox.compose.dedup import Override, ServiceGraph, relocation_fragment
 from sandbox.compose.hooks import hooks_fragment
 from sandbox.compose.network import network_fragment
 from sandbox.compose.services import RepoCompose, set_labels_fragment
-from sandbox.compose.web import WebApp, web_fragment
+from sandbox.compose.web import WebApp, extra_hostnames, web_fragment
 from sandbox.hooks import find_hooks
 from sandbox.yamlio import dump_yaml
 
@@ -67,7 +67,7 @@ def _agent(ctx: OverrideContext) -> dict[str, Any]:
 
 def _network(ctx: OverrideContext) -> dict[str, Any]:
     definitions = {name: s.definition for name, s in ctx.graph.services.items()}
-    return network_fragment(ctx.set_name, definitions, ctx.ips)
+    return network_fragment(ctx.set_name, definitions, ctx.ips, extra_hostnames(ctx.web_apps))
 
 
 def _init_hooks(ctx: OverrideContext) -> dict[str, Any]:

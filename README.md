@@ -101,6 +101,8 @@ services:
     build: ..
     x-sandbox:
       web: true # served at https://web.<set>.test
+      hosts: [admin, portal] # optional: https://admin.<set>.test, https://portal.<set>.test
+      vite: 5173 # optional: Vite dev server port
 ```
 
 Sandbox then:
@@ -113,7 +115,15 @@ Sandbox then:
   by any user, so the app can run as whatever user its image uses). Later `up`s reuse it
   while it verifies against the CA and has more than 7 days left;
 - injects `WORKTREE` (the repo's worktree, `<set dir>/<repo>`) and `APP_URL`
-  (`https://<repo>.<set>.test`) into the service's environment, and nothing else;
+  (`https://<repo>.<set>.test`) into the service's environment, and nothing else (plus
+  `VITE_HMR_HOST` with `vite`, below);
+- routes each extra host in `hosts` (`admin` becomes `admin.<set>.test`) to the same
+  container and IP: it is a network alias of the service, gets a line in the set's hosts
+  block, and is covered by the set's wildcard certificate. That is why an extra host must
+  be a single DNS label (`admin`, not `eu.admin`);
+- with `vite: <port>`, publishes that port on the app's IP as well and sets `VITE_HMR_HOST`
+  to the app's hostname. Point Vite's HMR at it, e.g. in `vite.config.js`:
+  `server: { host: true, port: 5173, hmr: { host: process.env.VITE_HMR_HOST } }`;
 - mounts the mkcert CA's `rootCA.pem`, never `rootCA-key.pem`, read-only at
   `/sandbox/ca/rootCA.pem` in every container of the set. The bundled agent image trusts it
   system-wide (curl, git) and through `NODE_EXTRA_CA_CERTS`; a service image decides itself
@@ -122,8 +132,9 @@ Sandbox then:
 The host trusts the certificate once `sudo sandbox setup` has installed the mkcert CA
 (`mkcert -install`). `up` fails before any container starts if a set with a web app finds
 no `rootCA.pem` in mkcert's `CAROOT`, if a repo marks more than one service or a service not
-named after the repo, or if a hostname is used twice in the set (e.g. another repo runs a
-service with the web app's name). Sets without a web app need neither mkcert nor the CA.
+named after the repo, if an extra host is more than one label deep, or if a hostname is used
+twice in the set (e.g. another repo runs a service with the web app's name, or an extra
+host matches a service or another web app). Sets without a web app need neither mkcert nor the CA.
 
 ### The agent container
 

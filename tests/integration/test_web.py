@@ -1,4 +1,5 @@
-"""A web app over HTTPS against real Docker and mkcert: trusted from the host and the agent.
+"""A web app over HTTPS against real Docker and mkcert: trusted from the host and the agent,
+at its own hostname and at the fixture's extra host (``admin``).
 
 mkcert runs against a CA of this test's own (``$CAROOT`` in a temp dir, never installed in
 the system store), so the host side trusts it explicitly with ``--cacert``; inside the set
@@ -31,6 +32,8 @@ FIXTURES = Path(__file__).parent.parent / "fixtures"
 SET = unique_set("web")
 PROJECT = project_name(SET)
 HOST = f"web.{SET}.test"
+# The fixture's extra host: same container, IP and certificate.
+ADMIN = f"admin.{SET}.test"
 
 
 def compose_down() -> None:
@@ -80,13 +83,13 @@ def web_ip(output: str) -> str:
     return match.group(1)
 
 
-def curl_from_host(ip: str, caroot: Path) -> dict[str, object]:
+def curl_from_host(ip: str, caroot: Path, host: str = HOST) -> dict[str, object]:
     output = subprocess.run(
         [
             "curl", "-sS", "--fail", "--noproxy", "*",
             "--cacert", str(caroot / "rootCA.pem"),
-            "--resolve", f"{HOST}:443:{ip}",
-            f"https://{HOST}/",
+            "--resolve", f"{host}:443:{ip}",
+            f"https://{host}/",
         ],
         check=True,
         capture_output=True,
@@ -115,6 +118,10 @@ def test_web_app_is_served_over_trusted_https(env: Env, web_repo: Path, caroot: 
     assert curl_from_host(ip, caroot) == expected
     # From the agent: the set hostname on the set network, trusting the mounted CA.
     assert json.loads(in_agent("curl", "-sS", "--fail", f"https://{HOST}/")) == expected
+    # The extra host reaches the same app, over the same certificate, from both sides.
+    assert f"{ADMIN}  {ip}  " in result.stdout
+    assert curl_from_host(ip, caroot, ADMIN) == expected
+    assert json.loads(in_agent("curl", "-sS", "--fail", f"https://{ADMIN}/")) == expected
     # The CA certificate is mounted; its key is not.
     assert "rootCA.pem" in in_agent("ls", "/sandbox/ca")
     assert "rootCA-key.pem" not in in_agent("ls", "/sandbox/ca")

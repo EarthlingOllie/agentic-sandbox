@@ -6,12 +6,13 @@ port number (``127.42.3.5:3306:3306``), so two sets running the same service nev
 on the host. The repo's own host-side bindings are replaced (Compose's ``!override``), not
 merged: a ``0.0.0.0:3306`` from the repo would clash between sets.
 
-On the set network (the project's ``default``) each service answers to both its short name
-and its set hostname; networks the repo attaches it to are kept (restated in full, so the
-entry also stands in for a relocated service's ``!override`` networks).
+On the set network (the project's ``default``) each service answers to its short name, its
+set hostname and any extra hostnames (a web app's ``hosts``); networks the repo attaches it
+to are kept (restated in full, so the entry also stands in for a relocated service's
+``!override`` networks).
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Address
 from typing import Any, Final, cast
@@ -81,8 +82,10 @@ def network_fragment(
     set_name: str,
     definitions: Mapping[str, Mapping[str, Any]],
     ips: Mapping[str, IPv4Address],
+    extra_aliases: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
-    """Ports and aliases for each service in ``definitions`` that has a leased IP."""
+    """Ports and aliases for each service in ``definitions`` that has a leased IP;
+    ``extra_aliases`` adds further set hostnames to a service (service name -> names)."""
     services: dict[str, Any] = {}
     for name, definition in sorted(definitions.items()):
         ip = ips.get(name)
@@ -91,7 +94,7 @@ def network_fragment(
         ports = [f"{ip}:{p.port}:{p.port}/{p.protocol}" for p in container_ports(name, definition)]
         networks = _networks(definition)
         own: dict[str, Any] = networks.get(SET_NETWORK) or {}
-        aliases = [name, hostname(name, set_name)]
+        aliases = [name, hostname(name, set_name), *(extra_aliases or {}).get(name, ())]
         extra = [a for a in cast(list[str], own.get("aliases") or []) if a not in aliases]
         networks[SET_NETWORK] = {**own, "aliases": [*aliases, *extra]}
         service: dict[str, Any] = {"networks": networks}

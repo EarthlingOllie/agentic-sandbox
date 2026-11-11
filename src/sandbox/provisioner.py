@@ -33,6 +33,7 @@ from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import resolve as resolve_services
 from sandbox.compose.override import OverrideContext, write_override
 from sandbox.compose.services import SANDBOX_DIRNAME, RepoCompose, load_repo_compose
+from sandbox.compose.web import extra_hostnames
 from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.git import Git
@@ -303,7 +304,7 @@ class Provisioner:
             ctx.project,
             ctx.services,
             ctx.action,
-            bindings(ctx.set_name, ctx.graph, ctx.lease),
+            bindings(ctx.set_name, ctx.graph, ctx.lease, extra_hostnames(ctx.web_apps)),
         )
 
     async def down(self, set_name: str) -> DownResult:

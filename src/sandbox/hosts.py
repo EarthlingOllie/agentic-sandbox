@@ -27,6 +27,7 @@ from typing import Final, Protocol
 
 from sandbox.bindings import bindings
 from sandbox.compose.network import TLD
+from sandbox.compose.web import extra_hostnames
 from sandbox.config import LOOPBACK, Config
 from sandbox.errors import SandboxError
 from sandbox.leases import BLOCK_PREFIX
@@ -230,7 +231,7 @@ def _writer(ctx: UpContext) -> HostsWriter:
 
 async def write_hosts_block(ctx: UpContext) -> None:
     """Post-up step: the set's block holds exactly its current hostnames and IPs."""
-    found = bindings(ctx.set_name, ctx.graph, ctx.lease)
+    found = bindings(ctx.set_name, ctx.graph, ctx.lease, extra_hostnames(ctx.web_apps))
     if ctx.lease is None or not found:
         await _writer(ctx).remove(ctx.set_name)  # a no-op unless services left the plan
         return
