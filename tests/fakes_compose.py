@@ -20,6 +20,10 @@ class FakeCompose:
     # When set, `up` fails with this message, as `compose up --wait` does for an
     # unhealthy service.
     up_error: str | None = None
+    # When set, `down` fails with this message.
+    down_error: str | None = None
+    # project -> services whose containers have stopped (they no longer count as running)
+    stopped_services: dict[str, set[str]] = field(default_factory=dict[str, set[str]])
 
     async def up(self, project: str, files: list[Path]) -> None:
         self.calls.append(("up", project))
@@ -30,7 +34,18 @@ class FakeCompose:
         if self.up_error is not None:
             raise ComposeError(self.up_error)
         self.running[project] = list(files)
+        self.stopped_services.pop(project, None)
 
     async def down(self, project: str) -> None:
         self.calls.append(("down", project))
+        if self.down_error is not None:
+            raise ComposeError(self.down_error)
         self.running.pop(project, None)
+        self.stopped_services.pop(project, None)
+
+    async def running_services(self, project: str) -> set[str]:
+        services: set[str] = set()
+        for path in self.running.get(project, []):
+            document: dict[str, dict[str, object] | None] = yaml.safe_load(path.read_text()) or {}
+            services.update(document.get("services") or {})
+        return services - self.stopped_services.get(project, set())

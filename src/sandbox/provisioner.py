@@ -1,15 +1,21 @@
-"""Provisioner: orchestrates ``up`` for one set.
+"""Provisioner: orchestrates ``up`` and ``down`` for one set.
 
-``up`` resolves the plan, validates every repo (including its compose file) before touching
-the filesystem, writes the plan (never overwriting one), ensures one worktree per repo, then
-renders the set's Compose override and brings the repos' backing services up healthy as
-Compose project ``sandbox-<set>``. ``down`` stops that project and leaves worktrees alone.
+``up`` resolves the plan, then runs the step pipeline (``sandbox.pipeline``):
+
+- ``VALIDATION_STEPS`` check every repo, its ``.sandbox/`` and compose file, then observe the
+  set's state. Nothing is created until all of them pass.
+- The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
+- ``PROVISION_STEPS`` write the plan, ensure worktrees and bring services up healthy as
+  Compose project ``sandbox-<set>``; on failure or Ctrl-C, started steps roll back.
+
+A later concern adds its step in its own module and one line to one of the two lists.
+``down`` stops the project and leaves worktrees alone.
 """
 
-import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from sandbox.compose import project_name
 from sandbox.compose.cli import Compose
@@ -19,6 +25,7 @@ from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.names import agent_branch, validate_repo_name, validate_set_name
+from sandbox.pipeline import Step, UpContext, Warn, fail_fast, provision, validate
 from sandbox.plan import (
     SetPlan,
     SetRepo,
@@ -28,9 +35,10 @@ from sandbox.plan import (
     plan_path,
     write_new_plan,
 )
+from sandbox.state import UpAction, decide, observe
 from sandbox.worktrees import WorktreeManager, WorktreeOutcome, WorktreeResult
 
-Warn = Callable[[str], None]
+__all__ = ["PROVISION_STEPS", "VALIDATION_STEPS", "Provisioner", "Step", "UpContext"]
 
 
 @dataclass(frozen=True)
@@ -39,10 +47,11 @@ class UpResult:
     set_dir: Path
     plan_file: Path
     plan_created: bool
-    worktrees: list[WorktreeResult]
+    worktrees: list[WorktreeResult]  # empty for a no-op
     project: str
     # Service names started under `project`; empty for a worktree-only set.
     services: list[str]
+    action: UpAction
 
 
 @dataclass(frozen=True)
@@ -50,6 +59,123 @@ class DownResult:
     set_name: str
     set_dir: Path
     project: str
+
+
+# --- validation steps: create nothing ------------------------------------------------------
+
+
+async def _validate_repos(ctx: UpContext) -> None:
+    errors: list[str] = []
+    for name, repo in ctx.plan.repos.items():
+        problem = await _source_problem(ctx.git, name, repo.source)
+        if problem:
+            errors.append(problem)
+            continue
+        if not await ctx.git.branch_exists(
+            repo.source, ctx.branch
+        ) and not await ctx.git.revision_exists(repo.source, repo.base):
+            errors.append(f"{name}: base {repo.base!r} does not exist in {repo.source}")
+    if errors:
+        raise SandboxError("\n".join(errors))
+
+
+async def _load_composes(ctx: UpContext) -> None:
+    """Each repo's compose file in repo-name order; repos without one are worktree-only."""
+    errors: list[str] = []
+    found: list[RepoCompose] = []
+    for name, repo in sorted(ctx.plan.repos.items()):
+        try:
+            repo_compose = load_repo_compose(name, repo.source)
+        except SandboxError as exc:
+            errors.append(str(exc))
+            continue
+        if repo_compose is not None:
+            found.append(repo_compose)
+    if errors:
+        raise SandboxError("\n".join(errors))
+    ctx.repo_composes = found
+    ctx.services = sorted({service for rc in found for service in rc.services})
+
+
+async def _observe_state(ctx: UpContext) -> None:
+    """Read the set's state (last, so it reflects Docker as close to acting as possible)."""
+    running: set[str] = set()
+    if ctx.plan_on_disk and ctx.services:
+        running = await ctx.compose.running_services(ctx.project)
+    ctx.running = running
+    ctx.state = observe(has_plan=ctx.plan_on_disk, expected=ctx.services, running=running)
+    ctx.action = decide(ctx.state, recreate=ctx.recreate)
+
+
+# --- provision steps: create, and undo on failure ----------------------------------------
+
+
+async def _write_plan(ctx: UpContext) -> None:
+    """Write the plan unless one exists; never overwrite one. Kept on rollback."""
+    ctx.set_dir.mkdir(parents=True, exist_ok=True)
+    if ctx.plan_on_disk:
+        return
+    try:
+        write_new_plan(ctx.plan_file, ctx.plan)
+        ctx.plan_created = True
+    except SandboxError:
+        # Another process created this set first: its plan wins if it matches ours.
+        on_disk = load_set_plan(ctx.set_dir)
+        _refuse_if_different(ctx.set_name, ctx.plan_file, ctx.plan, on_disk)
+        ctx.plan = on_disk
+
+
+async def _ensure_worktrees(ctx: UpContext) -> None:
+    """One worktree per repo, concurrently; existing ones are left alone. Kept on rollback."""
+    ctx.worktrees = await fail_fast(
+        ctx.worktree_manager.ensure(
+            repo=name,
+            source=repo.source,
+            path=ctx.set_dir / name,
+            branch=ctx.branch,
+            base=repo.base,
+        )
+        for name, repo in sorted(ctx.plan.repos.items())
+    )
+    for result in ctx.worktrees:
+        if result.outcome is WorktreeOutcome.REUSED_BRANCH:
+            ctx.warn(
+                f"{result.repo}: reusing existing branch {result.branch}; "
+                f"base {result.base!r} from the plan was ignored"
+            )
+
+
+async def _stop_for_recreate(ctx: UpContext) -> None:
+    if ctx.action is UpAction.RECREATE:
+        await ctx.compose.down(ctx.project)
+
+
+async def _compose_up(ctx: UpContext) -> None:
+    if not ctx.services:
+        return
+    override = write_override(OverrideContext(ctx.set_name, ctx.set_dir, ctx.repo_composes))
+    await ctx.compose.up(ctx.project, [*(rc.file for rc in ctx.repo_composes), override])
+
+
+async def _compose_down(ctx: UpContext) -> None:
+    if ctx.services:
+        await ctx.compose.down(ctx.project)
+
+
+VALIDATION_STEPS: Final[list[Step]] = [
+    Step("repos", _validate_repos),
+    Step("compose-files", _load_composes),
+    # Register further checks (dedup, hostname clashes, agent image) above this line.
+    Step("observe-state", _observe_state),
+]
+
+PROVISION_STEPS: Final[list[Step]] = [
+    Step("plan", _write_plan),
+    Step("worktrees", _ensure_worktrees),
+    Step("stop-for-recreate", _stop_for_recreate),
+    Step("compose-up", _compose_up, rollback=_compose_down),
+    # Register post-up steps (hosts block, init hooks) below this line.
+]
 
 
 class Provisioner:
@@ -70,11 +196,11 @@ class Provisioner:
         repos: Sequence[str] | None,
         cwd: Path,
         template: TemplatePlan | None = None,
+        recreate: bool = False,
     ) -> UpResult:
         validate_set_name(set_name)
         set_dir = self.set_dir(set_name)
         plan_file = plan_path(set_dir)
-        branch = agent_branch(set_name)
 
         if repos and template is not None:
             raise SandboxError("--from and --repos are mutually exclusive")
@@ -90,36 +216,34 @@ class Provisioner:
                 f"or sandbox {set_name} up --from TEMPLATE"
             )
 
-        # Everything that can fail cheaply is checked before anything is created.
-        await self._validate_repos(plan, branch)
-        repo_composes = _load_composes(plan)
-
-        set_dir.mkdir(parents=True, exist_ok=True)
-        plan_created = False
-        if on_disk is None:
-            try:
-                write_new_plan(plan_file, plan)
-                plan_created = True
-            except SandboxError:
-                # Another process created this set first: its plan wins if it matches ours.
-                on_disk = load_set_plan(set_dir)
-                _refuse_if_different(set_name, plan_file, plan, on_disk)
-                plan = on_disk
-
-        worktrees = await self._ensure_worktrees(plan, set_dir, branch)
-        for result in worktrees:
-            if result.outcome is WorktreeOutcome.REUSED_BRANCH:
-                self._warn(
-                    f"{result.repo}: reusing existing branch {result.branch}; "
-                    f"base {result.base!r} from the plan was ignored"
-                )
-
-        project = project_name(set_name)
-        services = sorted({service for rc in repo_composes for service in rc.services})
-        if services:
-            override = write_override(OverrideContext(set_name, set_dir, repo_composes))
-            await self._compose.up(project, [*(rc.file for rc in repo_composes), override])
-        return UpResult(set_name, set_dir, plan_file, plan_created, worktrees, project, services)
+        ctx = UpContext(
+            config=self._config,
+            git=self._git,
+            compose=self._compose,
+            warn=self._warn,
+            worktree_manager=self._worktrees,
+            set_name=set_name,
+            set_dir=set_dir,
+            plan_file=plan_file,
+            branch=agent_branch(set_name),
+            project=project_name(set_name),
+            plan=plan,
+            plan_on_disk=on_disk is not None,
+            recreate=recreate,
+        )
+        await validate(VALIDATION_STEPS, ctx)
+        if ctx.action is not UpAction.NOOP:
+            await provision(PROVISION_STEPS, ctx)
+        return UpResult(
+            set_name,
+            set_dir,
+            plan_file,
+            ctx.plan_created,
+            ctx.worktrees,
+            ctx.project,
+            ctx.services,
+            ctx.action,
+        )
 
     async def down(self, set_name: str) -> DownResult:
         """Stop the set's containers and remove its network and volumes; keep worktrees."""
@@ -157,7 +281,7 @@ class Provisioner:
         """
         errors: list[str] = []
         for name, repo in sorted(template.repos.items()):
-            problem = await self._source_problem(name, repo.source)
+            problem = await _source_problem(self._git, name, repo.source)
             if problem:
                 errors.append(problem)
         if errors:
@@ -179,7 +303,7 @@ class Provisioner:
                 errors.append(str(exc))
                 continue
             source = (cwd / name).resolve()
-            problem = await self._source_problem(name, source)
+            problem = await _source_problem(self._git, name, source)
             if problem:
                 errors.append(problem)
                 continue
@@ -205,70 +329,6 @@ class Provisioner:
             raise SandboxError("\n".join(errors))
         return SetPlan(repos=pinned)
 
-    async def _source_problem(self, name: str, source: Path) -> str | None:
-        if not source.is_dir():
-            return f"{name}: no repo directory at {source}"
-        if not (source / SANDBOX_DIRNAME).is_dir():
-            return (
-                f"{name}: {source} has no {SANDBOX_DIRNAME}/ directory; "
-                "a repo opts in to sandbox by adding one at its root"
-            )
-        if not await self._git.is_repository(source):
-            return f"{name}: {source} is not the root of a git repository"
-        return None
-
-    async def _validate_repos(self, plan: SetPlan, branch: str) -> None:
-        errors: list[str] = []
-        for name, repo in plan.repos.items():
-            problem = await self._source_problem(name, repo.source)
-            if problem:
-                errors.append(problem)
-                continue
-            if not await self._git.branch_exists(
-                repo.source, branch
-            ) and not await self._git.revision_exists(repo.source, repo.base):
-                errors.append(f"{name}: base {repo.base!r} does not exist in {repo.source}")
-        if errors:
-            raise SandboxError("\n".join(errors))
-
-    async def _ensure_worktrees(
-        self, plan: SetPlan, set_dir: Path, branch: str
-    ) -> list[WorktreeResult]:
-        try:
-            async with asyncio.TaskGroup() as group:
-                tasks = [
-                    group.create_task(
-                        self._worktrees.ensure(
-                            repo=name,
-                            source=repo.source,
-                            path=set_dir / name,
-                            branch=branch,
-                            base=repo.base,
-                        )
-                    )
-                    for name, repo in sorted(plan.repos.items())
-                ]
-        except* SandboxError as group:
-            raise SandboxError(_join_messages(group)) from group
-        return [task.result() for task in tasks]
-
-
-def _load_composes(plan: SetPlan) -> list[RepoCompose]:
-    """Each repo's compose file in repo-name order; repos without one are worktree-only."""
-    errors: list[str] = []
-    found: list[RepoCompose] = []
-    for name, repo in sorted(plan.repos.items()):
-        try:
-            repo_compose = load_repo_compose(name, repo.source)
-        except SandboxError as exc:
-            errors.append(str(exc))
-            continue
-        if repo_compose is not None:
-            found.append(repo_compose)
-    if errors:
-        raise SandboxError("\n".join(errors))
-    return found
-
 
 def _refuse_if_different(
     set_name: str, plan_file: Path, requested: SetPlan, on_disk: SetPlan
@@ -285,11 +345,14 @@ def _refuse_if_different(
     )
 
 
-def _join_messages(group: BaseExceptionGroup[SandboxError]) -> str:
-    messages: list[str] = []
-    for exc in group.exceptions:
-        if isinstance(exc, BaseExceptionGroup):
-            messages.append(_join_messages(exc))  # pyright: ignore[reportUnknownArgumentType]
-        else:
-            messages.append(str(exc))
-    return "\n".join(messages)
+async def _source_problem(git: Git, name: str, source: Path) -> str | None:
+    if not source.is_dir():
+        return f"{name}: no repo directory at {source}"
+    if not (source / SANDBOX_DIRNAME).is_dir():
+        return (
+            f"{name}: {source} has no {SANDBOX_DIRNAME}/ directory; "
+            "a repo opts in to sandbox by adding one at its root"
+        )
+    if not await git.is_repository(source):
+        return f"{name}: {source} is not the root of a git repository"
+    return None

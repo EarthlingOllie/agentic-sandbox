@@ -108,6 +108,12 @@ CI (`.github/workflows/ci.yml`) enforces all of the above.
   templates root, state dir) in a temp directory. Unit runs pass fakes in `Deps`;
   integration runs (`@pytest.mark.integration`) pass the real implementations through the
   same seam. Assert on exit codes, output and the files sandbox writes, not on internals.
+- **`up` is an ordered step pipeline** (`sandbox/pipeline.py`). A new check or action is a
+  `Step(name, run, rollback=...)` in its own module plus one line in
+  `provisioner.VALIDATION_STEPS` (checks that create nothing; all finish before any container
+  starts) or `provisioner.PROVISION_STEPS` (actions; on failure or Ctrl-C the started ones roll
+  back in reverse order, shielded from cancellation, keeping plan and worktrees). Per-repo
+  fan-out uses `pipeline.fail_fast` (a `TaskGroup`). The state table is in `sandbox/state.py`.
 - **Host state is shared across processes**, so writes to it are guarded by `flock`
   (`sandbox.locking.file_lock`); `git worktree add` is serialised per source repo.
 - **User-facing failures raise `SandboxError`**; the CLI prints `error: <message>` and

@@ -33,6 +33,7 @@ from sandbox.errors import SandboxError
 from sandbox.names import RESERVED_VERBS, validate_set_name
 from sandbox.platforms import ensure_supported_platform
 from sandbox.provisioner import Provisioner
+from sandbox.state import UpAction
 from sandbox.templates import TemplateStore
 from sandbox.worktrees import WorktreeOutcome
 
@@ -100,8 +101,16 @@ def up(
             help="Build a new set from a template (see `sandbox templates`).",
         ),
     ] = None,
+    recreate: Annotated[
+        bool,
+        typer.Option("--recreate", help="Restart the set's services even if already running."),
+    ] = False,
 ) -> None:
-    """Create the set (or resume it): a worktree per repo on agent/SET, services healthy."""
+    """Create the set, or resume it: a worktree per repo on agent/SET, services healthy.
+
+    A running set is left alone (use --recreate to restart it). If `up` fails or is
+    interrupted, the set's services are rolled back; plan and worktrees are kept.
+    """
     set_name = current_set(ctx, "up")
     if from_template is not None and (use_repos or names):
         usage_error("--from and --repos are mutually exclusive")
@@ -122,12 +131,22 @@ def up(
         deps = get_deps(ctx)
         provisioner = Provisioner(config, deps.git, deps.compose, warn)
         result = asyncio.run(
-            provisioner.up(set_name, repos=repos, cwd=Path.cwd(), template=template)
+            provisioner.up(
+                set_name,
+                repos=repos,
+                cwd=Path.cwd(),
+                template=template,
+                recreate=recreate,
+            )
         )
     except SandboxError as exc:
         failure(exc)
+    except KeyboardInterrupt:
+        # The pipeline has already rolled the set's services back (and said so).
+        typer.echo(f"error: interrupted: `up` of set {set_name!r} was cancelled", err=True)
+        raise typer.Exit(code=130) from None
 
-    typer.echo(f"set {result.set_name}: {result.set_dir}")
+    typer.echo(f"set {result.set_name}: {result.set_dir} ({result.action})")
     typer.echo(f"  plan: {result.plan_file}{' (created)' if result.plan_created else ''}")
     for worktree in result.worktrees:
         detail = {
@@ -137,7 +156,8 @@ def up(
         }[worktree.outcome]
         typer.echo(f"  {worktree.repo}: {worktree.path} [{worktree.branch}, {detail}]")
     if result.services:
-        typer.echo(f"  services: {', '.join(result.services)} healthy [{result.project}]")
+        status = "running" if result.action is UpAction.NOOP else "healthy"
+        typer.echo(f"  services: {', '.join(result.services)} {status} [{result.project}]")
     else:
         typer.echo("  services: none (no .sandbox/compose.yaml services)")
 
