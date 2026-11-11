@@ -12,18 +12,19 @@ from pathlib import Path
 
 import pytest
 
+from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git
+from tests.integration.conftest import git, unique_set
 
 pytestmark = pytest.mark.integration
 
 if shutil.which("docker") is None:
     pytest.skip("docker is not installed", allow_module_level=True)
 
-SET = "it-agent"
-PROJECT = f"sandbox-{SET}"
+SET = unique_set("agent")
+PROJECT = project_name(SET)
 CONTAINER = f"{PROJECT}-agent-1"
 RUNNING_AS_ROOT = os.getuid() == 0
 

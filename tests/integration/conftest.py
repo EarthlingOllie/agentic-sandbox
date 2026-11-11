@@ -1,5 +1,13 @@
-"""Integration fixtures: real git repositories in a temp directory."""
+"""Integration fixtures: real git repositories in a temp directory.
 
+Docker resources are global to the host, so every set name a test hands to real Docker
+Compose goes through :func:`unique_set`. Compose derives the project, container, network and
+volume names from it, so test runs from several worktrees (or an aborted earlier run's
+leftovers) never share a project. Set ``SANDBOX_TEST_RUN_ID`` to pin the prefix.
+"""
+
+import os
+import secrets
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -7,10 +15,19 @@ from pathlib import Path
 
 import pytest
 
+from sandbox.names import validate_set_name
 from tests.conftest import Env
 
 if shutil.which("git") is None:
     pytest.skip("git is not installed", allow_module_level=True)
+
+RUN_ID = os.environ.get("SANDBOX_TEST_RUN_ID") or secrets.token_hex(4)
+
+
+def unique_set(base: str) -> str:
+    """A set name (hence Compose project ``sandbox-<name>``) unique to this test run."""
+    return validate_set_name(f"it-{RUN_ID}-{base}")
+
 
 GIT_IDENTITY = {
     "GIT_AUTHOR_NAME": "Sandbox Tests",

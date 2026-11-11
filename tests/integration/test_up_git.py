@@ -9,9 +9,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from sandbox.compose import project_name
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git
+from tests.integration.conftest import git, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -78,24 +79,25 @@ def test_concurrent_up_processes_on_the_same_repo(
     api = make_repo("api")
     web = make_repo("web")
     count = 8
+    sets = [unique_set(f"set-{index}") for index in range(count)]
     processes = [
         subprocess.Popen(
-            [sys.executable, "-m", "sandbox", f"set-{index}", "up", "--repos", "api", "web"],
+            [sys.executable, "-m", "sandbox", set_name, "up", "--repos", "api", "web"],
             cwd=env.cwd,
             env=os.environ.copy(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
-        for index in range(count)
+        for set_name in sets
     ]
     try:
         outputs = [process.communicate(timeout=240) for process in processes]
     finally:
         # Each set also started its agent container.
-        for index in range(count):
+        for set_name in sets:
             subprocess.run(
-                ["docker", "compose", "-p", f"sandbox-set-{index}", "down", "--volumes"],
+                ["docker", "compose", "-p", project_name(set_name), "down", "--volumes"],
                 capture_output=True,
                 check=False,
             )
@@ -104,6 +106,6 @@ def test_concurrent_up_processes_on_the_same_repo(
         assert process.returncode == 0, stdout + stderr
     for repo in (api, web):
         worktrees = git(repo, "worktree", "list", "--porcelain")
-        for index in range(count):
-            assert f"branch refs/heads/agent/set-{index}" in worktrees
+        for set_name in sets:
+            assert f"branch refs/heads/agent/{set_name}" in worktrees
         assert git(repo, "fsck", "--no-progress") == ""

@@ -15,8 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from sandbox.compose import project_name
 from tests.conftest import Env
-from tests.integration.conftest import git
+from tests.integration.conftest import git, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -24,7 +25,8 @@ if shutil.which("docker") is None:
     pytest.skip("docker is not installed", allow_module_level=True)
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
-SETS = ("it-rb-ok", "it-rb-bad", "it-rb-int")
+OK, BAD, INT = unique_set("rb-ok"), unique_set("rb-bad"), unique_set("rb-int")
+SETS = (OK, BAD, INT)
 
 
 def quick_service(healthy: bool) -> str:
@@ -97,7 +99,7 @@ def _cleanup() -> Iterator[None]:
     yield
     for set_name in SETS:
         subprocess.run(
-            ["docker", "compose", "-p", f"sandbox-{set_name}", "down", "--volumes"],
+            ["docker", "compose", "-p", project_name(set_name), "down", "--volumes"],
             capture_output=True,
             check=False,
         )
@@ -107,46 +109,46 @@ def test_parallel_sets_fail_independently_and_rollback_keeps_worktrees(env: Env)
     make_repo(env, "good", quick_service(healthy=True))
     make_repo(env, "bad", quick_service(healthy=False))
 
-    ok = sandbox(env, "it-rb-ok", "up", "--repos", "good")
-    bad = sandbox(env, "it-rb-bad", "up", "--repos", "bad")
+    ok = sandbox(env, OK, "up", "--repos", "good")
+    bad = sandbox(env, BAD, "up", "--repos", "bad")
     _, ok_err = ok.communicate(timeout=180)
     _, bad_err = bad.communicate(timeout=180)
 
     assert ok.returncode == 0, ok_err
     assert bad.returncode == 1
-    assert "rolled back set 'it-rb-bad'" in bad_err
-    assert sorted(labelled("it-rb-ok", "container")) == [
-        "sandbox-it-rb-ok-agent-1",
-        "sandbox-it-rb-ok-app-1",
+    assert f"rolled back set '{BAD}'" in bad_err
+    assert sorted(labelled(OK, "container")) == [
+        f"{project_name(OK)}-agent-1",
+        f"{project_name(OK)}-app-1",
     ]
-    assert leftovers("it-rb-bad") == []
-    worktree = env.set_dir("it-rb-bad") / "bad"
-    assert git(worktree, "branch", "--show-current") == "agent/it-rb-bad"
-    assert (env.set_dir("it-rb-bad") / "sandbox.yaml").is_file()
+    assert leftovers(BAD) == []
+    worktree = env.set_dir(BAD) / "bad"
+    assert git(worktree, "branch", "--show-current") == f"agent/{BAD}"
+    assert (env.set_dir(BAD) / "sandbox.yaml").is_file()
 
 
 def test_running_set_is_a_no_op_and_a_stopped_one_resumes(env: Env) -> None:
     make_repo(env, "good", quick_service(healthy=True))
-    first = sandbox(env, "it-rb-ok", "up", "--repos", "good")
+    first = sandbox(env, OK, "up", "--repos", "good")
     assert first.wait(timeout=180) == 0
     # The app's container (the set's agent runs next to it).
-    app = ["ps", "-q", "--filter", "label=sandbox.set=it-rb-ok"]
+    app = ["ps", "-q", "--filter", f"label=sandbox.set={OK}"]
     app += ["--filter", "label=com.docker.compose.service=app"]
     container_id = docker(*app)
 
-    again = sandbox(env, "it-rb-ok", "up")
+    again = sandbox(env, OK, "up")
     out, err = again.communicate(timeout=60)
     assert again.returncode == 0, err
     assert "already running" in out
     assert docker(*app) == container_id
 
     docker("stop", "-t", "1", container_id)
-    resumed = sandbox(env, "it-rb-ok", "up")
+    resumed = sandbox(env, OK, "up")
     out, err = resumed.communicate(timeout=180)
     assert resumed.returncode == 0, err
     assert "resumed" in out
 
-    recreated = sandbox(env, "it-rb-ok", "up", "--recreate")
+    recreated = sandbox(env, OK, "up", "--recreate")
     out, err = recreated.communicate(timeout=180)
     assert recreated.returncode == 0, err
     assert "recreated" in out
@@ -160,9 +162,9 @@ def test_ctrl_c_mid_up_leaves_no_orphaned_resources(env: Env, whole_group: bool)
     shutil.copytree(FIXTURES / "mysql-repo", path)
     commit_repo(path)
 
-    process = sandbox(env, "it-rb-int", "up", "--repos", "api", new_session=True)
+    process = sandbox(env, INT, "up", "--repos", "api", new_session=True)
     deadline = time.monotonic() + 120
-    while not labelled("it-rb-int", "container"):
+    while not labelled(INT, "container"):
         assert process.poll() is None, process.communicate()
         assert time.monotonic() < deadline, "the container never appeared"
         time.sleep(0.2)
@@ -174,6 +176,6 @@ def test_ctrl_c_mid_up_leaves_no_orphaned_resources(env: Env, whole_group: bool)
 
     assert process.returncode == 130, err
     assert "interrupted" in err
-    assert "rolled back set 'it-rb-int'" in err
-    assert leftovers("it-rb-int") == []
-    assert (env.set_dir("it-rb-int") / "api" / ".git").is_file()
+    assert f"rolled back set '{INT}'" in err
+    assert leftovers(INT) == []
+    assert (env.set_dir(INT) / "api" / ".git").is_file()

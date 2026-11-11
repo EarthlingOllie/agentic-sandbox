@@ -8,12 +8,13 @@ from pathlib import Path
 
 import pytest
 
+from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.compose.dedup import ServiceConflictError, resolve
 from sandbox.compose.services import RepoCompose, load_repo_compose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git
+from tests.integration.conftest import git, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -21,8 +22,8 @@ if shutil.which("docker") is None:
     pytest.skip("docker is not installed", allow_module_level=True)
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
-SET = "it-dedup"
-PROJECT = f"sandbox-{SET}"
+SET = unique_set("dedup")
+PROJECT = project_name(SET)
 
 
 def docker(*args: str) -> str:

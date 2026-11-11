@@ -9,17 +9,19 @@ from pathlib import Path
 
 import pytest
 
+from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
+from tests.integration.conftest import unique_set
 
 pytestmark = pytest.mark.integration
 
 if shutil.which("docker") is None:
     pytest.skip("docker is not installed", allow_module_level=True)
 
-SET = "it-claude"
-PROJECT = f"sandbox-{SET}"
+SET = unique_set("claude")
+PROJECT = project_name(SET)
 
 
 def compose_down() -> None:
