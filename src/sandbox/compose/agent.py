@@ -6,7 +6,8 @@ rebuilt) as the developer's
 host UID:GID, never root, with every capability dropped, ``no-new-privileges``, and no
 Docker socket. It sees exactly:
 
-- the set directory at ``/workspace/<set>/`` (where shells start);
+- the set directory at ``/workspace/<set>/`` (where shells start), its plan
+  ``sandbox.yaml`` read-only (the plan pins the agent override);
 - each source repo's ``.git`` read-write at its exact host path, because a worktree's
   ``.git`` file points there; the source's working tree itself is never mounted;
 - the host's ``~/.claude/`` at ``/home/agent/.claude`` (``CLAUDE_CONFIG_DIR``), so every
@@ -20,6 +21,7 @@ add capabilities, or mount the Docker socket. Extra services join the set networ
 """
 
 import hashlib
+import json
 import os
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -28,6 +30,7 @@ from typing import Annotated, Any, Final, cast
 from pydantic import AfterValidator
 
 from sandbox.compose import AGENT_SERVICE, SET_LABEL
+from sandbox.names import PLAN_FILENAME
 
 AGENT_HOME: Final = "/home/agent"
 AGENT_CLAUDE_DIR: Final = f"{AGENT_HOME}/.claude"
@@ -70,15 +73,25 @@ def host_claude_dir() -> Path:
 OVERRIDE_KEYS: Final = ("services", "volumes", "networks")
 SECURITY_OPT: Final = ["no-new-privileges:true"]
 # Settings an override may not give the agent at all: each is a way out of the container.
+# ``extends`` is among them because Compose merges the extended service in after sandbox
+# re-applies its guarantees, so it could bring back any of the others.
 FORBIDDEN_AGENT_KEYS: Final = (
+    "extends",
     "privileged",
     "cap_add",
     "devices",
+    "device_cgroup_rules",
+    "gpus",
     "volumes_from",
     "network_mode",
     "pid",
     "ipc",
+    "uts",
+    "cgroup",
     "userns_mode",
+    "use_api_socket",  # mounts the Docker socket
+    "group_add",  # e.g. the socket's group
+    "runtime",
 )
 DOCKER_SOCKETS: Final = (PurePosixPath("/var/run/docker.sock"), PurePosixPath("/run/docker.sock"))
 SET_NETWORK: Final = "default"
@@ -208,11 +221,15 @@ def _guarantees(set_name: str, set_dir: Path, sources: Mapping[str, Path]) -> di
     The mounts are the only ones an override can't replace; a CA mount joins them once
     sets have a CA (HTTPS web apps).
     """
+    plan_target = f"{workspace(set_name)}/{PLAN_FILENAME}"
     return {
         "user": agent_user(),
         "environment": {"HOME": AGENT_HOME, "CLAUDE_CONFIG_DIR": AGENT_CLAUDE_DIR},
         "volumes": [
             _bind(set_dir, workspace(set_name)),
+            # Read-only: the plan pins the agent override, so an agent that could edit it
+            # would choose its own settings at the developer's next `up`.
+            {**_bind(set_dir / PLAN_FILENAME, plan_target), "read_only": True},
             *(_bind(sources[n] / ".git", str(sources[n] / ".git")) for n in sorted(sources)),
             _bind(host_claude_dir(), AGENT_CLAUDE_DIR),
         ],
@@ -316,13 +333,53 @@ def _exposes_docker_socket(source: str) -> bool:
 
     Checked both as written and with symlinks resolved, since Docker follows them.
     """
+    sockets = docker_sockets()
     for candidate in {os.path.normpath(source), os.path.realpath(source)}:
         path = PurePosixPath(candidate)
         if path.name == "docker.sock":
             return True
-        if any(path == socket or path in socket.parents for socket in DOCKER_SOCKETS):
+        if any(path == socket or path in socket.parents for socket in sockets):
             return True
     return False
+
+
+def docker_sockets() -> set[PurePosixPath]:
+    """Every Docker socket this host may be using: the default paths, rootless Docker's
+    (``$XDG_RUNTIME_DIR/docker.sock``), ``DOCKER_HOST``'s and the current docker context's
+    unix socket, each also with symlinks resolved."""
+    hosts = [os.environ.get("DOCKER_HOST", ""), _context_host()]
+    paths = [*map(str, DOCKER_SOCKETS), f"/run/user/{os.getuid()}/docker.sock"]
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        paths.append(f"{runtime_dir}/docker.sock")
+    paths += [host.removeprefix("unix://") for host in hosts if host.startswith("unix://")]
+    found: set[PurePosixPath] = set()
+    for path in paths:
+        if path.startswith("/"):
+            found |= {PurePosixPath(os.path.normpath(path)), PurePosixPath(os.path.realpath(path))}
+    return found
+
+
+def _context_host() -> str:
+    """The docker endpoint of the current docker context (``DOCKER_CONTEXT`` or the CLI
+    config's ``currentContext``), or "" for the default context or an unreadable one."""
+    config_dir = Path(os.environ.get("DOCKER_CONFIG") or Path.home() / ".docker")
+    name = os.environ.get("DOCKER_CONTEXT")
+    try:
+        if not name:
+            name = _json_mapping(config_dir / "config.json").get("currentContext")
+        if not isinstance(name, str) or name in ("", "default"):
+            return ""
+        meta_dir = config_dir / "contexts" / "meta" / hashlib.sha256(name.encode()).hexdigest()
+        endpoints = _mapping(_json_mapping(meta_dir / "meta.json").get("Endpoints"))
+        host = _mapping(endpoints.get("docker")).get("Host")
+    except (OSError, ValueError):
+        return ""
+    return host if isinstance(host, str) else ""
+
+
+def _json_mapping(path: Path) -> Mapping[str, Any]:
+    return _mapping(json.loads(path.read_text()))
 
 
 def _join_set_network(networks: object) -> object:

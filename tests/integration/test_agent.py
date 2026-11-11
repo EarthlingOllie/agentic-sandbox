@@ -77,6 +77,10 @@ def test_agent_sees_the_workspace_and_git_dirs_but_not_the_main_working_tree(
     assert in_agent("test -f api/.sandbox/compose.yaml && echo ok") == "ok"
     assert in_agent(f"test -d {api}/.git && echo ok") == "ok"
     assert in_agent(f"test ! -e {api}/.sandbox && echo ok") == "ok"
+    # The plan pins the agent override, so the agent can read it but not change it.
+    assert in_agent("test -r sandbox.yaml && echo ok") == "ok"
+    assert in_agent("echo x >> sandbox.yaml 2>/dev/null || echo refused") == "refused"
+    assert in_agent("rm -f sandbox.yaml 2>/dev/null || echo refused") == "refused"
 
 
 def test_host_claude_dir_is_shared(env: Env, api: Path) -> None:

@@ -31,6 +31,8 @@ SET_NAME_PATTERN: Final = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 # colliding with the files sandbox writes there (sandbox.yaml, override.yaml, certificates).
 REPO_NAME_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
 
+# The set plan, at the root of the set directory.
+PLAN_FILENAME: Final = "sandbox.yaml"
 BRANCH_PREFIX: Final = "agent/"
 
 

@@ -5,6 +5,8 @@ capability drops, no Docker socket) are re-applied on top of it, and a custom im
 have ``sh``, ``git`` and ``claude`` on PATH before any container starts.
 """
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -293,6 +295,114 @@ def test_override_without_an_image_keeps_the_bundled_image(h: Harness) -> None:
     assert agent["pull_policy"] == "never"
     assert agent["environment"]["FOO"] == "bar"
     assert h.images.probed == []
+
+
+# --- review w6: bypasses an agent could write into its own plan ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("extends", {"file": "evil.yaml", "service": "x"}),
+        ("use_api_socket", True),
+        ("group_add", ["999"]),
+        ("cgroup", "host"),
+        ("uts", "host"),
+        ("runtime", "runc"),
+        ("device_cgroup_rules", ["c 1:3 mr"]),
+        ("gpus", "all"),
+    ],
+)
+def test_agent_override_cannot_use_escape_hatch_keys(h: Harness, key: str, value: object) -> None:
+    h.repo("api")
+    h.config(image_override("corp/agent:1", **{key: value}))
+
+    result = h.up("--repos", "api")
+
+    assert result.exit_code == 0, result.output
+    assert key not in h.agent()
+    assert f"services.agent.{key}" in result.stderr
+
+
+def _docker_context(home: Path, name: str, host: str) -> None:
+    docker_dir = home / ".docker"
+    meta = docker_dir / "contexts" / "meta" / hashlib.sha256(name.encode()).hexdigest()
+    meta.mkdir(parents=True)
+    (meta / "meta.json").write_text(
+        json.dumps({"Name": name, "Endpoints": {"docker": {"Host": host}}})
+    )
+    (docker_dir / "config.json").write_text(json.dumps({"currentContext": name}))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/run/user/4242",
+        "/run/user/4242/docker.sock",
+        "/srv/dock",
+        "/srv/dock/custom.sock",
+        "/srv/ctx",
+        "/srv/ctx/engine.sock",
+    ],
+)
+def test_rootless_custom_and_context_docker_sockets_are_not_mounted(
+    h: Harness, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/4242")
+    monkeypatch.setenv("DOCKER_HOST", "unix:///srv/dock/custom.sock")
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    _docker_context(Path.home(), "remote-ish", "unix:///srv/ctx/engine.sock")
+    h.repo("api")
+    h.config(image_override("corp/agent:1", volumes=[f"{source}:/s", "/srv/data:/data"]))
+
+    result = h.up("--repos", "api")
+
+    assert result.exit_code == 0, result.output
+    mounted = targets(h.agent())
+    assert "/s" not in mounted
+    assert mounted["/data"] == "/srv/data"
+    assert "Docker socket" in result.stderr
+
+
+def test_docker_context_named_by_docker_context_env_is_refused(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.setenv("DOCKER_CONTEXT", "other")
+    monkeypatch.delenv("DOCKER_CONFIG", raising=False)
+    _docker_context(Path.home(), "other", "unix:///srv/other/d.sock")
+    h.repo("api")
+    h.config(image_override("corp/agent:1", volumes=["/srv/other:/s"]))
+
+    result = h.up("--repos", "api")
+
+    assert result.exit_code == 0, result.output
+    assert "/s" not in targets(h.agent())
+
+
+def test_the_set_plan_is_read_only_in_the_agent(h: Harness) -> None:
+    h.repo("api")
+    h.config(image_override("corp/agent:1", volumes=["/srv/x:/workspace/jira-123/sandbox.yaml"]))
+
+    result = h.up("--repos", "api")
+
+    assert result.exit_code == 0, result.output
+    volumes: list[Any] = h.agent()["volumes"]
+    plan_mounts: list[Any] = [
+        volume
+        for volume in volumes
+        if isinstance(volume, dict) and volume["target"] == f"/workspace/{SET}/sandbox.yaml"
+    ]
+    assert plan_mounts == [
+        {
+            "type": "bind",
+            "source": str(h.env.set_dir(SET) / "sandbox.yaml"),
+            "target": f"/workspace/{SET}/sandbox.yaml",
+            "read_only": True,
+        }
+    ]
+    assert "/srv/x" not in targets(h.agent()).values()
 
 
 # --- extra services ----------------------------------------------------------------------

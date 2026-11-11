@@ -7,16 +7,14 @@ the plan (unknown keys such as ``name`` are rejected).
 """
 
 from pathlib import Path
-from typing import Annotated, Any, Final
+from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from sandbox.compose.agent import AgentOverride
 from sandbox.errors import SandboxError
-from sandbox.names import validate_repo_name
+from sandbox.names import PLAN_FILENAME, validate_repo_name
 from sandbox.yamlio import dump_yaml, read_yaml, validate_file
-
-PLAN_FILENAME: Final = "sandbox.yaml"
 
 
 def _require_absolute(path: Path) -> Path:

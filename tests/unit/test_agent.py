@@ -79,11 +79,14 @@ def test_set_dir_and_each_repos_git_dir_are_mounted_but_not_the_working_tree(
     api, web = env.cwd / "api", env.cwd / "web"
     assert mounts(agent) == {
         "/workspace/jira-123": str(env.set_dir("jira-123")),
+        "/workspace/jira-123/sandbox.yaml": str(env.set_dir("jira-123") / "sandbox.yaml"),
         f"{api}/.git": f"{api}/.git",
         f"{web}/.git": f"{web}/.git",
         "/home/agent/.claude": str(Path.home() / ".claude"),
     }
-    assert not any(volume.get("read_only") for volume in agent["volumes"])
+    # Only the plan is read-only: it pins the agent override (see test_agent_override).
+    read_only = [volume["target"] for volume in agent["volumes"] if volume.get("read_only")]
+    assert read_only == ["/workspace/jira-123/sandbox.yaml"]
 
 
 def test_agent_runs_as_the_host_uid_and_gid(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
