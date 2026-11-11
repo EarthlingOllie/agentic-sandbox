@@ -131,7 +131,7 @@ def overridden_settings(
 ) -> list[str]:
     """What sandbox will ignore in ``override`` to keep its guarantees (one line each)."""
     guarantees = _guarantees(set_name, set_dir, sources)
-    _, notes = _sanitize_agent(_agent_spec(override), guarantees)
+    _, notes = _sanitize_agent(_agent_spec(override), guarantees, _declared_volumes(override))
     for name in extra_services(override):
         if "network_mode" in _services(override)[name]:
             notes.append(f"services.{name}.network_mode (extra services join the set network)")
@@ -158,7 +158,7 @@ def agent_fragment(
         "init": True,
         "working_dir": workspace(set_name),
     }
-    cleaned, _ = _sanitize_agent(_agent_spec(override), guarantees)
+    cleaned, _ = _sanitize_agent(_agent_spec(override), guarantees, _declared_volumes(override))
     if "image" in cleaned:
         # A custom image comes from a registry (or the local cache), not from our build.
         del service["build"]
@@ -220,7 +220,9 @@ def _guarantees(set_name: str, set_dir: Path, sources: Mapping[str, Path]) -> di
 
 
 def _sanitize_agent(
-    spec: Mapping[str, Any], guarantees: Mapping[str, Any]
+    spec: Mapping[str, Any],
+    guarantees: Mapping[str, Any],
+    declared_volumes: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
     """``spec`` without what would weaken the guarantees, and a note for each removal."""
     cleaned = dict(spec)
@@ -248,8 +250,9 @@ def _sanitize_agent(
         kept: list[Any] = []
         for volume in cast(list[Any], cleaned["volumes"] or []):
             source, target = _volume_ends(volume)
-            if _exposes_docker_socket(source):
-                notes.append(f"volume {source} (would expose the Docker socket)")
+            refusal = _socket_refusal(volume, declared_volumes)
+            if refusal is not None:
+                notes.append(f"volume {source} ({refusal})")
             elif target in reserved:
                 notes.append(f"volume on {target} (sandbox mounts {target} itself)")
             else:
@@ -267,14 +270,59 @@ def _volume_ends(volume: object) -> tuple[str, str]:
     return str(spec.get("source", "")), str(spec.get("target", ""))
 
 
+SOCKET_REFUSAL: Final = "would expose the Docker socket"
+RELATIVE_REFUSAL: Final = (
+    "relative bind sources are not allowed for the agent: Compose resolves them against "
+    "the project directory, so use an absolute path"
+)
+
+
+def _socket_refusal(volume: object, declared_volumes: Mapping[str, Any]) -> str | None:
+    """Why ``volume`` may not be mounted on the agent, or None if it is safe.
+
+    Bind sources are resolved as Compose resolves them (``~`` against the home directory)
+    and refused when they are, or contain, a Docker socket; a relative source is refused
+    outright because it depends on the project directory. A named volume is checked
+    through its declaration: a ``local`` volume with a bind ``device`` is a bind mount too.
+    """
+    source, _ = _volume_ends(volume)
+    if not source:
+        return None  # an anonymous volume
+    kind = _mapping(volume).get("type")
+    if kind == "bind" or source.startswith(("/", ".", "~")):
+        return _host_path_refusal(source)
+    if kind not in (None, "volume"):
+        return None  # tmpfs, npipe, ...: no host path
+    declaration = _mapping(declared_volumes.get(source))
+    device = _mapping(declaration.get("driver_opts")).get("device")
+    if device is None:
+        return None
+    refusal = _host_path_refusal(str(device))
+    return f"its declared device {refusal}" if refusal is not None else None
+
+
+def _host_path_refusal(source: str) -> str | None:
+    try:
+        expanded = str(Path(source).expanduser())
+    except RuntimeError:  # ``~user`` for an unknown user: Compose can't resolve it either
+        return RELATIVE_REFUSAL
+    if not expanded.startswith("/"):
+        return RELATIVE_REFUSAL
+    return SOCKET_REFUSAL if _exposes_docker_socket(expanded) else None
+
+
 def _exposes_docker_socket(source: str) -> bool:
-    """True for a socket path itself, or any directory that contains one (``/var/run``)."""
-    if not source.startswith("/"):
-        return False  # a named volume
-    path = PurePosixPath(os.path.normpath(source))
-    if path.name == "docker.sock":
-        return True
-    return any(path == socket or path in socket.parents for socket in DOCKER_SOCKETS)
+    """True for a socket path itself, or any directory that contains one (``/var/run``).
+
+    Checked both as written and with symlinks resolved, since Docker follows them.
+    """
+    for candidate in {os.path.normpath(source), os.path.realpath(source)}:
+        path = PurePosixPath(candidate)
+        if path.name == "docker.sock":
+            return True
+        if any(path == socket or path in socket.parents for socket in DOCKER_SOCKETS):
+            return True
+    return False
 
 
 def _join_set_network(networks: object) -> object:
@@ -308,6 +356,10 @@ def _labels(value: object) -> dict[str, Any]:
 def _services(override: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
     services = _mapping(override.get("services") if override else None)
     return {str(name): dict(_mapping(spec)) for name, spec in services.items()}
+
+
+def _declared_volumes(override: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    return _mapping(override.get("volumes") if override else None)
 
 
 def _agent_spec(override: Mapping[str, Any] | None) -> dict[str, Any]:

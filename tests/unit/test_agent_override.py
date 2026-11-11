@@ -219,6 +219,69 @@ def test_override_cannot_remove_the_guarantees(h: Harness, monkeypatch: pytest.M
         assert word in result.stderr
 
 
+UP_TO_ROOT = "../" * 40
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        f"{UP_TO_ROOT}var/run/docker.sock:/s",
+        f"./{UP_TO_ROOT}var/run:/s",
+        {"type": "bind", "source": f"{UP_TO_ROOT}run/docker.sock", "target": "/s"},
+        f"~/{UP_TO_ROOT}var/run:/s",
+        f"~/{UP_TO_ROOT}run/docker.sock:/s",
+    ],
+)
+def test_relative_and_home_bind_sources_cannot_reach_the_docker_socket(
+    h: Harness, volume: object
+) -> None:
+    h.repo("api")
+    h.config(image_override("corp/agent:1", volumes=[volume, "cache:/home/agent/.cache"]))
+
+    result = h.up("--repos", "api")
+
+    assert result.exit_code == 0, result.output
+    mounted = targets(h.agent())
+    assert "/s" not in mounted
+    assert mounted["/home/agent/.cache"] == "cache"
+    assert "Docker socket" in result.stderr or "relative" in result.stderr
+
+
+@pytest.mark.parametrize("device", ["/var/run/docker.sock", "/var/run", "/run", "/"])
+def test_named_volume_bound_to_the_docker_socket_is_not_mounted(h: Harness, device: str) -> None:
+    h.repo("api")
+    override = image_override(
+        "corp/agent:1", volumes=["dock:/s", {"type": "volume", "source": "dock", "target": "/t"}]
+    )
+    override["volumes"] = {
+        "dock": {"driver": "local", "driver_opts": {"type": "none", "o": "bind", "device": device}}
+    }
+    h.config(override)
+
+    result = h.up("--repos", "api")
+
+    assert result.exit_code == 0, result.output
+    mounted = targets(h.agent())
+    assert "/s" not in mounted
+    assert "/t" not in mounted
+    assert "dock" in result.stderr
+    assert "Docker socket" in result.stderr
+
+
+def test_named_volume_bound_to_a_harmless_directory_is_kept(h: Harness) -> None:
+    h.repo("api")
+    override = image_override("corp/agent:1", volumes=["data:/data"])
+    override["volumes"] = {
+        "data": {"driver_opts": {"type": "none", "o": "bind", "device": "/srv/data"}}
+    }
+    h.config(override)
+
+    result = h.up("--repos", "api")
+
+    assert result.exit_code == 0, result.output
+    assert targets(h.agent())["/data"] == "data"
+
+
 def test_override_without_an_image_keeps_the_bundled_image(h: Harness) -> None:
     h.repo("api")
     h.config({"services": {"agent": {"environment": {"FOO": "bar"}}}})
