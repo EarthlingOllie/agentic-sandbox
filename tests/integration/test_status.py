@@ -1,10 +1,10 @@
 """`status` against real Docker labels and real git worktrees."""
 
-import hashlib
 import json
 import shutil
 import subprocess
 from collections.abc import Iterator
+from ipaddress import IPv4Network
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,7 @@ from sandbox.compose.cli import SubprocessCompose
 from sandbox.docker import SubprocessDocker
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import RUN_ID, git, unique_set
+from tests.integration.conftest import git, ip_in_block, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -24,9 +24,6 @@ if shutil.which("docker") is None:
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 SET = unique_set("status")
-# A pool of this run's own, so its bindings can't meet another run's on the host.
-OCTET = 64 + int(hashlib.sha256(f"{RUN_ID}-status".encode()).hexdigest(), 16) % 128
-POOL = f"127.{OCTET}.0.0/16"
 
 
 def compose_down() -> None:
@@ -39,8 +36,6 @@ def compose_down() -> None:
 
 @pytest.fixture
 def mysql_repo(env: Env) -> Iterator[Path]:
-    with env.config_file.open("a") as config:
-        config.write(f"ip_pool: {POOL}\n")
     path = env.cwd / "api"
     shutil.copytree(FIXTURES / "mysql-repo", path)
     git(path, "init", "--quiet", "--initial-branch=main")
@@ -62,7 +57,9 @@ def listed_state(name: str) -> str:
     return sets[name]["state"]
 
 
-def test_status_follows_a_set_through_its_lifecycle(env: Env, mysql_repo: Path) -> None:
+def test_status_follows_a_set_through_its_lifecycle(
+    env: Env, mysql_repo: Path, ip_pool: IPv4Network
+) -> None:
     run(SET, "up", "--repos", "api")
 
     detail = run(SET, "status", "--json")
@@ -75,7 +72,7 @@ def test_status_follows_a_set_through_its_lifecycle(env: Env, mysql_repo: Path) 
         "state": "running",
         "health": "healthy",
         "hostname": f"mysql.{SET}.test",
-        "ip": f"127.{OCTET}.0.1",
+        "ip": ip_in_block(ip_pool, 0, 1),
     }
     assert detail["repos"] == [
         {

@@ -1,11 +1,11 @@
 """Two sets run the same `mysql:3306` side by side, each on its own leased loopback IP."""
 
-import hashlib
 import re
 import shutil
 import socket
 import subprocess
 from collections.abc import Iterator
+from ipaddress import IPv4Network
 from pathlib import Path
 
 import pytest
@@ -14,7 +14,7 @@ from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import RUN_ID, git, unique_set
+from tests.integration.conftest import git, ip_in_block, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -23,9 +23,6 @@ if shutil.which("docker") is None:
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 SETS = (unique_set("net-a"), unique_set("net-b"))
-# A pool of this run's own, so its bindings can't meet another run's on the host.
-OCTET = 64 + int(hashlib.sha256(RUN_ID.encode()).hexdigest(), 16) % 128
-POOL = f"127.{OCTET}.0.0/16"
 
 
 def docker(*args: str) -> str:
@@ -53,8 +50,6 @@ def down_all() -> None:
 
 @pytest.fixture
 def mysql_repo(env: Env) -> Iterator[Path]:
-    with env.config_file.open("a") as config:
-        config.write(f"ip_pool: {POOL}\n")
     path = env.cwd / "api"
     shutil.copytree(FIXTURES / "mysql-repo", path)
     compose = path / ".sandbox" / "compose.yaml"
@@ -83,7 +78,9 @@ def reachable(ip: str, port: int) -> bool:
         return True
 
 
-def test_two_sets_with_the_same_service_come_up_side_by_side(mysql_repo: Path) -> None:
+def test_two_sets_with_the_same_service_come_up_side_by_side(
+    mysql_repo: Path, ip_pool: IPv4Network
+) -> None:
     first, second = SETS
     results = [
         invoke([name, "up", "--repos", "api"], SubprocessGit(), SubprocessCompose())
@@ -93,7 +90,7 @@ def test_two_sets_with_the_same_service_come_up_side_by_side(mysql_repo: Path) -
     for result in results:
         assert result.exit_code == 0, result.output
     ips = [binding(result.stdout, name) for result, name in zip(results, SETS, strict=True)]
-    assert ips == [f"127.{OCTET}.0.1", f"127.{OCTET}.1.1"]
+    assert ips == [ip_in_block(ip_pool, 0, 1), ip_in_block(ip_pool, 1, 1)]
     for name, ip in zip(SETS, ips, strict=True):
         # Published on the hostname's IP only, at the native port.
         assert docker("port", f"{project_name(name)}-mysql-1", "3306/tcp") == f"{ip}:3306"

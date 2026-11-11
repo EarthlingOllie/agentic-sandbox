@@ -1,6 +1,5 @@
 """Init hooks against real Docker Compose: a hook creates its database; a failing one rolls back."""
 
-import hashlib
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -12,7 +11,7 @@ from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import RUN_ID, git, unique_set
+from tests.integration.conftest import git, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -22,8 +21,6 @@ if shutil.which("docker") is None:
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 SET = unique_set("hooks")
 PROJECT = project_name(SET)
-# A pool of this run's own, so published ports can't meet another run's on the host.
-POOL = f"127.{64 + int(hashlib.sha256(RUN_ID.encode()).hexdigest(), 16) % 128}.0.0/16"
 MYSQL = f"{PROJECT}-mysql-1"
 API_HOOK = 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS api_app"\n'
 
@@ -35,9 +32,6 @@ def docker(*args: str) -> str:
 
 
 def fixture_repo(env: Env, fixture: str, name: str, hooks: dict[str, str] | None = None) -> Path:
-    if "ip_pool" not in env.config_file.read_text():
-        with env.config_file.open("a") as config:
-            config.write(f"ip_pool: {POOL}\n")
     path = env.cwd / name
     shutil.copytree(FIXTURES / fixture, path)
     for service, script in (hooks or {}).items():
