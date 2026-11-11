@@ -45,11 +45,15 @@ class ServiceStatus(_Model):
 class RepoStatus(_Model):
     name: str
     path: Path
-    # False when the worktree directory is gone (or no longer a git worktree).
+    # False when the agent's clone is gone (or no longer a git repository sandbox can read).
     exists: bool
-    branch: str | None  # None when the worktree is missing or on a detached HEAD
+    branch: str | None  # None when the clone is missing or on a detached HEAD
     modified: bool
     untracked: bool
+    # How syncing agent/<set> into the source repo went (``sandbox.git.SyncOutcome``),
+    # and why it didn't when it didn't.
+    sync: str = "unchanged"
+    sync_detail: str = ""
 
 
 class SetStatus(_Model):

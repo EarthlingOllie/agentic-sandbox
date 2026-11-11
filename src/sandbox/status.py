@@ -10,6 +10,9 @@ A set with a plan is **running** when every service it expects (its repos' servi
 the agent) has a running container, **stopped** when none does and **partial** in between.
 Anything else is **orphaned**: containers or a lease whose set has no plan, or a set
 directory that never got one. ``prune`` clears orphans.
+
+One set's status first syncs each agent clone's ``agent/<set>`` into its source repo
+(``sandbox.clones``), then reports each clone's branch and changes.
 """
 
 import asyncio
@@ -19,6 +22,7 @@ from pathlib import Path
 
 from sandbox.agent import set_services
 from sandbox.bindings import lease_store
+from sandbox.clones import CloneManager
 from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.network import hostname
 from sandbox.config import Config
@@ -34,7 +38,7 @@ from sandbox.models.status import (
     SetSummary,
     StatusList,
 )
-from sandbox.names import validate_set_name
+from sandbox.names import agent_branch, validate_set_name
 from sandbox.plan import SetPlan, load_set_plan, plan_path
 
 RUNNING = "running"
@@ -58,6 +62,7 @@ class StatusReader:
         self._config = config
         self._git = git
         self._docker = docker
+        self._clones = CloneManager(git, config.lock_dir)
 
     async def list_sets(self) -> StatusList:
         observed = await self._observe()
@@ -151,14 +156,15 @@ class StatusReader:
 
     async def _repos(self, set_name: str, plan: SetPlan) -> list[RepoStatus]:
         set_dir = self._set_dir(set_name)
+        synced = await self._clones.sync_set(set_dir, plan, agent_branch(set_name))
         names = sorted(plan.repos)
         async with asyncio.TaskGroup() as group:
             tasks = [
-                group.create_task(self._git.worktree_status(plan.repos[n].source, set_dir / n))
+                group.create_task(self._git.clone_status(plan.repos[n].source, set_dir / n))
                 for n in names
             ]
         repos: list[RepoStatus] = []
-        for name, task in zip(names, tasks, strict=True):
+        for name, task, sync in zip(names, tasks, synced, strict=True):
             found = task.result()
             repos.append(
                 RepoStatus(
@@ -168,6 +174,8 @@ class StatusReader:
                     branch=found.branch if found else None,
                     modified=found.modified if found else False,
                     untracked=found.untracked if found else False,
+                    sync=sync.result.outcome,
+                    sync_detail=sync.result.detail,
                 )
             )
         return repos

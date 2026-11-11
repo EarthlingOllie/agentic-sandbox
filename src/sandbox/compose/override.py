@@ -34,7 +34,7 @@ class OverrideContext:
     repos: list[RepoCompose]
     # The deduplicated services of all repos (see sandbox.compose.dedup).
     graph: ServiceGraph = field(default_factory=lambda: ServiceGraph({}))
-    # Every repo in the plan (including worktree-only ones) -> its absolute source.
+    # Every repo in the plan (including ones without services) -> its absolute source.
     sources: Mapping[str, Path] = field(default_factory=dict[str, Path])
     # The plan's agent override, if any (see sandbox.compose.agent).
     agent: Mapping[str, Any] | None = None

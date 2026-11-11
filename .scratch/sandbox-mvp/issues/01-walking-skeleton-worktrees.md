@@ -1,5 +1,7 @@
 # 01: Walking skeleton — `sandbox SET up --repos` creates a set with worktrees
 
+> **Superseded in part (agent clones):** a set's repos are no longer `git worktree`s of the source. Each is the agent's own `git clone --shared` in the set directory; the source's `.git` is mounted read-only in the agent; sandbox syncs `agent/<set>` into the source on `up`, `SET status`, `down` and `destroy`. See the revision note in `spec.md` and "The agent's clones" in the README.
+
 **What to build:** The first end-to-end path through the tool, plus the toolchain it sits on. Running `sandbox jira-123 up --repos api web` from a directory holding `./api` and `./web` creates the set directory under the configured sets root, writes its plan (`sandbox.yaml`, pinning each repo's absolute `source` and `base`), and cuts a git worktree per repo on branch `agent/jira-123`. No containers yet. This ticket also establishes the project conventions and the primary test seam every later ticket builds on (spec: Toolchain, Testing Decisions, stories 12–16, 22–25, 27–30, 31, 35, 36, 110, 111).
 
 **Blocked by:** None (can start immediately)

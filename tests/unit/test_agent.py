@@ -71,7 +71,7 @@ def test_agent_is_hardened(env: Env) -> None:
     assert not any("docker.sock" in source for source in mounts(agent).values())
 
 
-def test_set_dir_and_each_repos_git_dir_are_mounted_but_not_the_working_tree(
+def test_set_dir_and_each_repos_git_dir_read_only_are_mounted_but_not_the_working_tree(
     env: Env,
 ) -> None:
     agent = up(env, "api", "web")
@@ -81,15 +81,14 @@ def test_set_dir_and_each_repos_git_dir_are_mounted_but_not_the_working_tree(
         "/workspace/jira-123": str(env.set_dir("jira-123")),
         "/workspace/jira-123/sandbox.yaml": str(env.set_dir("jira-123") / "sandbox.yaml"),
         f"{api}/.git": f"{api}/.git",
-        f"{api}/.git/logs": f"{api}/.git/logs",
         f"{web}/.git": f"{web}/.git",
-        f"{web}/.git/logs": f"{web}/.git/logs",
         "/home/agent/.claude": str(Path.home() / ".claude"),
     }
-    # The plan pins the agent override (see test_agent_override); a repo's .git holds what
-    # host-side git reads (config, hooks), so an agent that could edit it (a filter, say)
-    # would run code on the host at the next `status` or `destroy`. Only what committing
-    # writes is read-write (see tests/integration/test_agent_git_isolation.py).
+    # The plan pins the agent override (see test_agent_override). The agent works in its own
+    # clone in the set directory; a repo's .git is mounted only for the objects the clone
+    # borrows, and read-only as a whole: host git reads and writes there, so any writable
+    # part of it (config, hooks, a symlink under refs/ or objects/) would be a way onto the
+    # host (see tests/integration/test_agent_git_isolation.py).
     read_only = [volume["target"] for volume in agent["volumes"] if volume.get("read_only")]
     assert read_only == [
         "/workspace/jira-123/sandbox.yaml",

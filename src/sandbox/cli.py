@@ -17,6 +17,7 @@ import typer
 from typer.core import TyperGroup
 
 from sandbox.bindings import format_bindings
+from sandbox.clones import CloneOutcome
 from sandbox.commands.claude import claude
 from sandbox.commands.destroy import destroy
 from sandbox.commands.down import down
@@ -43,7 +44,6 @@ from sandbox.platforms import ensure_supported_platform
 from sandbox.provisioner import Provisioner
 from sandbox.state import UpAction
 from sandbox.templates import TemplateStore
-from sandbox.worktrees import WorktreeOutcome
 
 
 class SetFirstGroup(TyperGroup):
@@ -69,7 +69,7 @@ class SetFirstGroup(TyperGroup):
 app = typer.Typer(
     cls=SetFirstGroup,
     name="sandbox",
-    help="Provision isolated multi-repo sets (worktrees, services, agent) for coding agents.",
+    help="Provision isolated multi-repo sets (agent clones, services, agent) for coding agents.",
     subcommand_metavar="[SET] VERB [ARGS]...",
     no_args_is_help=True,
     add_completion=False,
@@ -114,10 +114,11 @@ def up(
         typer.Option("--recreate", help="Restart the set's services even if already running."),
     ] = False,
 ) -> None:
-    """Create the set, or resume it: a worktree per repo on agent/SET, services healthy.
+    """Create the set, or resume it: the agent's clone of each repo on agent/SET, services
+    healthy, and agent/SET synced into each repo.
 
     A running set is left alone (use --recreate to restart it). If `up` fails or is
-    interrupted, the set's services are rolled back; plan and worktrees are kept.
+    interrupted, the set's services are rolled back; plan and clones are kept.
     """
     set_name = current_set(ctx, "up")
     if from_template is not None and (use_repos or names):
@@ -165,13 +166,15 @@ def up(
 
     typer.echo(f"set {result.set_name}: {result.set_dir} ({result.action})")
     typer.echo(f"  plan: {result.plan_file}{' (created)' if result.plan_created else ''}")
-    for worktree in result.worktrees:
+    for clone in result.clones:
         detail = {
-            WorktreeOutcome.CREATED: f"created from {worktree.base}",
-            WorktreeOutcome.REUSED_BRANCH: "existing branch reused",
-            WorktreeOutcome.EXISTING: "already present",
-        }[worktree.outcome]
-        typer.echo(f"  {worktree.repo}: {worktree.path} [{worktree.branch}, {detail}]")
+            CloneOutcome.CREATED: f"created from {clone.base}",
+            CloneOutcome.REUSED_BRANCH: "existing branch reused",
+            CloneOutcome.EXISTING: "already present",
+        }[clone.outcome]
+        typer.echo(f"  {clone.repo}: {clone.path} [{clone.branch}, {detail}]")
+    for note in result.sync_notes:
+        warn(note)
     if result.services:
         status = "running" if result.action is UpAction.NOOP else "healthy"
         typer.echo(f"  services: {', '.join(result.services)} {status} [{result.project}]")

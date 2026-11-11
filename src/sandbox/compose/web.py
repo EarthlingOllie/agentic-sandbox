@@ -7,8 +7,8 @@ Its service gets:
   service's set hostname, so ``sandbox.compose.network`` already aliases it);
 - ``net.ipv4.ip_unprivileged_port_start=0``, so the app listens on 443 as non-root;
 - the set's leaf certificate read-only at ``/sandbox/tls/`` (``cert.pem``, ``key.pem``);
-- ``WORKTREE`` (its repo's worktree) and ``APP_URL`` (``https://<hostname>``) in its
-  environment, and nothing else;
+- ``WORKTREE`` (its repo's checkout in the set directory: the agent's clone) and
+  ``APP_URL`` (``https://<hostname>``) in its environment, and nothing else;
 - with ``hosts: [admin, portal]``, the extra hostnames ``admin.<set>.test`` and
   ``portal.<set>.test`` on the same container and IP: ``sandbox.compose.network`` aliases
   them (from :func:`extra_hostnames`), the hosts block lists them, and the set's
@@ -41,7 +41,7 @@ class WebApp:
     # The Compose service: always named after the repo.
     service: str
     set_name: str
-    # The repo's worktree in the set directory.
+    # The repo's checkout in the set directory (the agent's clone).
     worktree: Path
     # Extra one-label hosts (``admin`` -> ``admin.<set>.test``) on the same container and IP.
     hosts: tuple[str, ...] = ()

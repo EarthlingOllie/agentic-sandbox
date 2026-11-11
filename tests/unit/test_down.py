@@ -1,11 +1,13 @@
-"""`sandbox SET down` stops the set's Compose project and keeps its worktrees (fake Compose)."""
+"""`sandbox SET down` stops the set's Compose project, syncs agent/SET into each repo and keeps
+the agent's clones (fake git and Compose)."""
 
+from sandbox.git import SyncOutcome, SyncResult
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
 from tests.fakes_compose import FakeCompose
 
 
-def test_down_stops_the_project_and_keeps_worktrees_and_plan(env: Env) -> None:
+def test_down_stops_the_project_and_keeps_clones_and_plan(env: Env) -> None:
     git, compose = FakeGit(), FakeCompose()
     api = env.make_repo_dir("api")
     git.add_repo(api)
@@ -18,9 +20,37 @@ def test_down_stops_the_project_and_keeps_worktrees_and_plan(env: Env) -> None:
     assert compose.running == {}
     assert compose.calls[-1] == ("down", "sandbox-jira-123")
     set_dir = env.set_dir("jira-123")
-    assert (set_dir / "api" / ".git").is_file()
+    assert (set_dir / "api" / ".git").is_dir()
     assert (set_dir / "sandbox.yaml").is_file()
-    assert git.repo(api).checked_out["agent/jira-123"] == set_dir / "api"
+    assert git.clone(set_dir / "api").branch == "agent/jira-123"
+
+
+def test_down_brings_the_agents_commits_into_the_repo(env: Env) -> None:
+    git = FakeGit()
+    api = env.make_repo_dir("api")
+    git.add_repo(api)
+    assert invoke(["jira-123", "up", "--repos", "api"], git).exit_code == 0
+    git.clone(env.set_dir("jira-123") / "api").commits.append("agent work")
+
+    result = invoke(["jira-123", "down"], git)
+
+    assert result.exit_code == 0, result.output
+    assert git.repo(api).commits["agent/jira-123"] == ["agent work"]
+
+
+def test_down_warns_about_a_branch_it_could_not_sync(env: Env) -> None:
+    git = FakeGit()
+    api = env.make_repo_dir("api")
+    git.add_repo(api)
+    assert invoke(["jira-123", "up", "--repos", "api"], git).exit_code == 0
+    git.clone(env.set_dir("jira-123") / "api").sync_result = SyncResult(
+        SyncOutcome.CHECKED_OUT, f"agent/jira-123 is checked out in {api}"
+    )
+
+    result = invoke(["jira-123", "down"], git)
+
+    assert result.exit_code == 0, result.output
+    assert "api: not synced (checked-out)" in result.stderr
 
 
 def test_down_of_an_unknown_set_fails(env: Env) -> None:

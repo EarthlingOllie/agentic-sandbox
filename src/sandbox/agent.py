@@ -45,7 +45,7 @@ def set_services(plan: SetPlan) -> list[str]:
 
 
 def agent_target(set_name: str, plan: SetPlan, repo: str | None = None) -> ExecTarget:
-    """The agent, starting in the set's workspace or in ``repo``'s worktree."""
+    """The agent, starting in the set's workspace or in its clone of ``repo``."""
     workdir = workspace(set_name)
     if repo is not None:
         if repo not in plan.repos:
@@ -64,7 +64,7 @@ def service_target(set_name: str, plan: SetPlan, service: str) -> ExecTarget:
         hint = f"sandbox {set_name} sh --repo {service}"
         raise TargetError(
             f"no service {service!r} in set {set_name!r} (services: {', '.join(services)}); "
-            f"to open a shell in a repo's worktree use: {hint}"
+            f"to open a shell in a repo's clone use: {hint}"
         )
     return ExecTarget(project_name(set_name), service, None)
 

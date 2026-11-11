@@ -1,17 +1,20 @@
 """``destroy``: remove a set for good, without ever silently losing the agent's work.
 
-Destroying a set prunes it (``sandbox.prune``: containers, network, volumes, hosts block,
-IP lease), then removes each worktree through ``git worktree remove`` so the source repos'
-worktree metadata stays clean, then deletes the set directory (plan, override, certificate).
+Destroying a set first syncs each agent clone's ``agent/<set>`` into its source repo
+(``sandbox.clones``), prunes the set (``sandbox.prune``: containers, network, volumes, hosts
+block, IP lease), then deletes the agent's clones and the set directory (plan, override,
+certificate). The clones hold nothing of the source repos' own: no worktree metadata.
 
 Every check runs before anything is removed, and a refusal leaves the set as it was:
 
 - a set with any service running is refused (``down`` it first), even with ``force``;
-- a worktree with uncommitted or untracked changes is refused, naming them, unless ``force``;
+- a repo whose agent branch couldn't be synced (it diverged, is checked out in the source,
+  or the fetch failed) is refused, since its commits would be lost, unless ``force``;
+- a clone with uncommitted or untracked changes is refused, naming them, unless ``force``;
 - the ``agent/<set>`` branches are kept unless ``branches``; with it, a branch holding
   commits no remote-tracking branch, other branch or tag holds is refused unless ``force``.
 
-Containers write into the worktrees as whatever user they run as, so a worktree can hold
+Containers write into the clones as whatever user they run as, so a clone can hold
 root-owned files the developer can't delete. On Linux those are deleted from a throwaway
 root container started with the ``docker`` CLI (sudo is never needed); on macOS, Docker
 Desktop maps container files to the developer, so the case doesn't arise.
@@ -23,11 +26,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from sandbox.clones import CloneManager, RepoSync
 from sandbox.compose.cli import Compose
 from sandbox.config import Config
 from sandbox.docker import Docker
 from sandbox.errors import SandboxError
-from sandbox.git import Git, GitCommandError
+from sandbox.git import Git
 from sandbox.hosts import HostsWriter
 from sandbox.locking import file_lock
 from sandbox.models.status import SetStateName
@@ -35,7 +39,6 @@ from sandbox.names import BRANCH_PREFIX, validate_set_name
 from sandbox.plan import load_set_plan, plan_path
 from sandbox.prune import Pruner
 from sandbox.status import StatusReader
-from sandbox.worktrees import WorktreeManager
 
 # How many changed paths or commits a refusal names per repo before summarising the rest.
 MAX_NAMED: Final = 10
@@ -49,7 +52,7 @@ class Destroyed:
     set_name: str
     set_dir: Path
     branch: str
-    worktrees: list[Path]
+    clones: list[Path]
     # The source repos whose agent branch was deleted (only with ``branches``).
     deleted_branches: list[Path]
     # The source repos whose agent branch was kept.
@@ -78,7 +81,7 @@ class Destroyer:
         self._docker = docker
         self._pruner = Pruner(config, git, compose, docker, hosts)
         self._status = StatusReader(config, git, docker)
-        self._worktrees = WorktreeManager(git, config.lock_dir)
+        self._clones = CloneManager(git, config.lock_dir)
         self._root_cleaned: list[Path] = []
 
     async def destroy(self, set_name: str, *, force: bool, branches: bool) -> Destroyed:
@@ -88,36 +91,40 @@ class Destroyer:
             raise SandboxError(f"no set {set_name!r}: {plan_path(set_dir)} does not exist")
         plan = load_set_plan(set_dir)
         branch = f"{BRANCH_PREFIX}{set_name}"
-        worktrees = {name: (repo.source, set_dir / name) for name, repo in plan.repos.items()}
+        clones = {name: (repo.source, set_dir / name) for name, repo in plan.repos.items()}
 
-        # Refusals first, so a refused destroy changes nothing. Pruning refuses a set with
-        # anything running; its own check is repeated here so that refusal comes first too.
+        # Refusals first, so a refused destroy changes nothing (syncing only brings the
+        # agent's commits into the source repos). Pruning refuses a set with anything
+        # running; its own check is repeated here so that refusal comes first too.
         await self._refuse_running(set_name)
+        synced = await self._clones.sync_set(set_dir, plan, branch)
         if not force:
-            await self._refuse_dirty(set_name, worktrees)
+            self._refuse_unsynced(set_name, synced)
+            await self._refuse_dirty(set_name, clones)
         if branches and not force:
             await self._refuse_unpushed(set_name, branch, plan.sources())
 
         await self._pruner.prune_set(set_name)
-        for source, path in worktrees.values():
-            await self._remove_worktree(source, path, force=force)
+        for _, path in clones.values():
+            await self._remove_tree(path)
         deleted: list[Path] = []
         kept: list[Path] = []
         for source in plan.sources().values():
-            if not await self._git.branch_exists(source, branch):
-                continue
-            if branches:
-                async with file_lock(self._worktrees.lock_path(source)):
+            async with file_lock(self._clones.lock_path(source)):
+                await self._git.forget_agent_tip(source, branch)
+                if not await self._git.branch_exists(source, branch):
+                    continue
+                if branches:
                     await self._git.delete_branch(source, branch)
-                deleted.append(source)
-            else:
-                kept.append(source)
+                    deleted.append(source)
+                else:
+                    kept.append(source)
         await self._remove_tree(set_dir)
         return Destroyed(
             set_name=set_name,
             set_dir=set_dir,
             branch=branch,
-            worktrees=[path for _, path in worktrees.values()],
+            clones=[path for _, path in clones.values()],
             deleted_branches=deleted,
             kept_branches=kept,
             root_cleaned=list(self._root_cleaned),
@@ -131,10 +138,20 @@ class Destroyer:
                 f"set {set_name!r} is {summary.state}; stop it first with: sandbox {set_name} down"
             )
 
-    async def _refuse_dirty(self, set_name: str, worktrees: dict[str, tuple[Path, Path]]) -> None:
+    @staticmethod
+    def _refuse_unsynced(set_name: str, synced: list[RepoSync]) -> None:
+        problems = [f"  {s.note()}" for s in synced if not s.synced]
+        if problems:
+            raise SandboxError(
+                f"set {set_name!r} has agent commits destroy would discard:\n"
+                + "\n".join(problems)
+                + "\nbring them into the repo yourself, or rerun with --force to discard them"
+            )
+
+    async def _refuse_dirty(self, set_name: str, clones: dict[str, tuple[Path, Path]]) -> None:
         problems: list[str] = []
-        for name, (source, path) in worktrees.items():
-            status = await self._git.worktree_status(source, path)
+        for name, (source, path) in clones.items():
+            status = await self._git.clone_status(source, path)
             if status is None or not (status.modified or status.untracked):
                 continue
             kinds = [
@@ -171,20 +188,6 @@ class Destroyer:
                 + f"\npush them, drop --branches to keep {branch}, "
                 "or rerun with --force to delete them"
             )
-
-    async def _remove_worktree(self, source: Path, path: Path, *, force: bool) -> None:
-        async with file_lock(self._worktrees.lock_path(source)):
-            if (path / ".git").exists():
-                try:
-                    await self._git.remove_worktree(source, path, force=force)
-                except GitCommandError as exc:
-                    if not self._may_clean_as_root(exc):
-                        raise
-                    await self._empty_as_root(path)
-            if path.exists():
-                await self._remove_tree(path)
-            # Drops the metadata of a worktree that was deleted rather than removed.
-            await self._git.prune_worktrees(source)
 
     async def _remove_tree(self, path: Path) -> None:
         try:

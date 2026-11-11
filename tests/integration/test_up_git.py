@@ -1,6 +1,7 @@
-"""`up` against real git: worktrees, branch reuse, and concurrent processes."""
+"""`up` against real git: the agent's clones, branch reuse, and concurrent processes."""
 
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -17,7 +18,7 @@ from tests.integration.conftest import git, unique_set
 pytestmark = pytest.mark.integration
 
 
-def test_up_creates_real_worktrees_on_agent_branch(
+def test_up_creates_the_agents_clones_on_its_branch_and_the_branch_in_each_repo(
     env: Env, make_repo: Callable[[str], Path]
 ) -> None:
     api = make_repo("api")
@@ -31,9 +32,11 @@ def test_up_creates_real_worktrees_on_agent_branch(
     plan = yaml.safe_load((set_dir / "sandbox.yaml").read_text())
     assert plan["repos"]["web"] == {"source": str(web.resolve()), "base": "release/2.4"}
     for repo in (api, web):
-        worktree = set_dir / repo.name
-        assert git(worktree, "branch", "--show-current") == "agent/jira-123"
-        assert str(worktree) in git(repo, "worktree", "list")
+        clone = set_dir / repo.name
+        assert git(clone, "branch", "--show-current") == "agent/jira-123"
+        assert git(clone, "rev-parse", "HEAD") == git(repo, "rev-parse", "agent/jira-123")
+        # A clone of its own, not a worktree of the source repo.
+        assert git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
     # The source checkouts are untouched.
     assert git(api, "branch", "--show-current") == "main"
     assert git(web, "branch", "--show-current") == "release/2.4"
@@ -57,20 +60,20 @@ def test_later_up_reuses_surviving_branch_and_its_commits(
 ) -> None:
     api = make_repo("api")
     assert invoke(["jira-123", "up", "--repos", "api"], SubprocessGit()).exit_code == 0
-    worktree = env.set_dir("jira-123") / "api"
-    (worktree / "work.txt").write_text("agent work\n")
-    git(worktree, "add", "work.txt")
-    git(worktree, "commit", "--quiet", "-m", "agent work")
+    clone = env.set_dir("jira-123") / "api"
+    (clone / "work.txt").write_text("agent work\n")
+    git(clone, "add", "work.txt")
+    git(clone, "commit", "--quiet", "-m", "agent work")
+    assert invoke(["jira-123", "status"], SubprocessGit()).exit_code == 0  # syncs it
     # Simulate the set directory being lost while the branch survives.
-    git(api, "worktree", "remove", "--force", str(worktree))
-    (env.set_dir("jira-123") / "sandbox.yaml").unlink()
+    shutil.rmtree(env.set_dir("jira-123"))
     git(api, "commit", "--quiet", "--allow-empty", "-m", "main moved on")
 
     result = invoke(["jira-123", "up", "--repos", "api"], SubprocessGit())
 
     assert result.exit_code == 0, result.output
     assert "base 'main' from the plan was ignored" in result.stderr
-    assert (worktree / "work.txt").read_text() == "agent work\n"
+    assert (clone / "work.txt").read_text() == "agent work\n"
 
 
 def test_concurrent_up_processes_on_the_same_repo(
@@ -105,7 +108,8 @@ def test_concurrent_up_processes_on_the_same_repo(
     for process, (stdout, stderr) in zip(processes, outputs, strict=True):
         assert process.returncode == 0, stdout + stderr
     for repo in (api, web):
-        worktrees = git(repo, "worktree", "list", "--porcelain")
         for set_name in sets:
-            assert f"branch refs/heads/agent/{set_name}" in worktrees
+            clone = env.sets_root / set_name / repo.name
+            assert git(clone, "branch", "--show-current") == f"agent/{set_name}"
+            assert git(repo, "rev-parse", f"agent/{set_name}") == git(repo, "rev-parse", "main")
         assert git(repo, "fsck", "--no-progress") == ""

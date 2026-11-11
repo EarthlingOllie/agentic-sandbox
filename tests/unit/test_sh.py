@@ -29,7 +29,7 @@ def test_sh_opens_a_shell_in_the_agent_at_the_set_workspace(env: Env) -> None:
     assert compose.execs == [("sandbox-jira-123", "agent", ["sh"], "/workspace/jira-123")]
 
 
-def test_sh_repo_starts_in_that_repos_worktree(env: Env) -> None:
+def test_sh_repo_starts_in_that_repos_clone(env: Env) -> None:
     git, compose = provision(env)
 
     result = invoke(["jira-123", "sh", "--repo", "web"], git, compose)

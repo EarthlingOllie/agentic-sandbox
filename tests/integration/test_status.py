@@ -1,4 +1,4 @@
-"""`status` against real Docker labels and real git worktrees."""
+"""`status` against real Docker labels and the agent's real git clones."""
 
 import json
 import shutil
@@ -82,12 +82,14 @@ def test_status_follows_a_set_through_its_lifecycle(
             "branch": f"agent/{SET}",
             "modified": False,
             "untracked": False,
+            "sync": "unchanged",
+            "sync_detail": "",
         }
     ]
 
-    worktree = env.set_dir(SET) / "api"
-    (worktree / "README.md").write_text("changed\n")
-    (worktree / "notes.txt").write_text("new\n")
+    clone = env.set_dir(SET) / "api"
+    (clone / "README.md").write_text("changed\n")
+    (clone / "notes.txt").write_text("new\n")
     repo = run(SET, "status", "--json")["repos"][0]
     assert (repo["modified"], repo["untracked"]) == (True, True)
     assert "* uncommitted changes, ? untracked files" in run(SET, "status")

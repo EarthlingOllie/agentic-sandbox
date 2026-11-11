@@ -112,8 +112,8 @@ def test_web_app_is_served_over_trusted_https(env: Env, web_repo: Path, caroot: 
 
     assert result.exit_code == 0, result.output
     ip = web_ip(result.stdout)
-    worktree = str(env.set_dir(SET) / "web")
-    expected = {"user": 65534, "WORKTREE": worktree, "APP_URL": f"https://{HOST}"}
+    clone = str(env.set_dir(SET) / "web")
+    expected = {"user": 65534, "WORKTREE": clone, "APP_URL": f"https://{HOST}"}
     # From the host: the leased IP, port 443, the set's certificate (no -k).
     assert curl_from_host(ip, caroot) == expected
     # From the agent: the set hostname on the set network, trusting the mounted CA.

@@ -20,9 +20,11 @@ Today that is painful:
 
 A Python CLI, `sandbox`, that provisions isolated **sets**. A set is named after a unit of work (e.g. `jira-123`) and contains:
 
-- a git worktree per repo, on branch `agent/<set>`
+- the agent's own clone of each repo, on branch `agent/<set>`, synced back into the repo as `agent/<set>`
 - one deduplicated instance of each backing service those repos need
-- an agent container with the worktrees mounted
+- an agent container with the clones mounted
+
+> **Revision (agent clones).** The MVP first gave each set a `git worktree` of every repo, with the repo's `.git` mounted into the agent. Any part of a shared `.git` the agent can write and host git later reads or writes is a route onto the host: config and hooks (code exec), and symlinks under `logs/`, `refs/` or `objects/` that host git then writes through (agent-chosen bytes into a file of the agent's choosing). A read-only bind of `.git/config` alone is detached when host git renames a new config over it, and narrow read-write binds of `.git` subdirectories still allow the symlink swap. So the set's repos are now **the agent's own clones** (`git clone --shared`: the source's objects borrowed read-only through `alternates`), the source's `.git` is mounted **read-only as a whole**, and sandbox **syncs** the clone's `agent/<set>` into the source repo on `up`, `SET status`, `down` and `destroy`, using host git with isolated config (pinned program-running keys, no system/global config, no `GIT_*` env) that never reads the clone's config or hooks and never follows its symlinks (`git upload-pack --strict` on the clone; status from a snapshot git dir). `agent/<set>` in the source repo is therefore not live, and the set is no longer a git worktree. Stories below that say "worktree" now mean the agent's clone; stories 29, 30, 78, 100, 101 and the WorktreeManager module read as revised here.
 
 Each set is a Docker Compose project. Every hostname in a set gets its **own loopback IP** and keeps its **native port**, so `mysql.jira-123.test:3306` and `mysql.jira-456.test:3306` coexist. Inside the set, apps reach services by their short alias (`mysql`), exactly as their committed `.env.example` says. Web apps are served on HTTPS at `https://<app>.<set>.test` with a per-set mkcert wildcard certificate trusted both on the host and inside the containers. The only injected environment is `WORKTREE` and values derived from it (`APP_URL`).
 
@@ -66,8 +68,8 @@ The user runs `sandbox jira-123 up --repos api web`, waits for healthchecks and 
 26. As a developer, I want `sandbox jira-123 up --from TEMPLATE` to copy a template into the new set, so that I can provision a known combination in one command.
 27. As a developer, I want a repo to opt in by having a `.sandbox/` directory at its root, with `compose.yaml` and init scripts inside both optional, so that repos without services can still take part.
 28. As a developer, I want naming a repo without `.sandbox/` to fail before anything is created, whether it comes from `--repos` or a template, so that I never get a half-built set.
-29. As a developer, I want each repo's worktree created on branch `agent/<set>` from its `base`, so that the agent's commits are isolated and easy to find.
-30. As a developer, I want `git worktree add` serialised per repo, so that parallel sets on the same repo don't corrupt its `.git`.
+29. As a developer, I want each repo cloned for the agent on branch `agent/<set>` from its `base`, and that branch synced into my repo on `up`, `SET status`, `down` and `destroy` (fast-forward, or following the agent's rewrites when I haven't touched it; never overwriting my own commits on it or a checked-out branch), so that the agent's commits are isolated and easy to find.
+30. As a developer, I want clone creation and branch syncing serialised per repo, so that parallel sets on the same repo don't corrupt its `.git`.
 31. As a developer, I want a later `up` with the same set name to reuse surviving `agent/<set>` branches and warn that `base` was ignored, so that the agent's earlier work is picked up rather than lost.
 32. As a developer, I want all validation (plan, repos, dedup, agent image requirements) to happen before any container starts, so that failures are cheap.
 33. As a developer, I want `up` to block until every service's healthcheck passes, so that the set is actually usable when the command returns.
@@ -130,7 +132,7 @@ The user runs `sandbox jira-123 up --repos api web`, waits for healthchecks and 
 75. As a developer, I want `sandbox SET sh --repo api` to start the shell in that repo's worktree.
 76. As a developer, I want `sandbox SET sh SERVICE` to open a shell in that service's container, and an unknown name to fail and suggest `--repo`, so that I don't confuse services and repos.
 77. As a developer, I want the set directory mounted at `/workspace/<set>/` (e.g. `/workspace/jira-123/api`), so that Claude session histories don't merge across sets.
-78. As a developer, I want each main repo's `.git` mounted read-write at its exact host path, and the main working tree never mounted, so that worktrees function while my own checkout stays out of reach (accepting that other branches are visible).
+78. As a developer, I want each main repo's `.git` mounted read-only at its exact host path (the clones borrow its objects there), and the main working tree never mounted, so that the agent can't write anything host git later reads or writes (accepting that other branches are visible).
 79. As a developer, I want the host's `~/.claude/` bind-mounted read-write into every agent container with `CLAUDE_CONFIG_DIR=/home/agent/.claude`, so that all sets share one login and config without touching my host `~/.claude.json`.
 80. As a macOS developer, I want the first `sandbox SET claude` to run `/login` inside the container, writing `.credentials.json` into the shared mount, so that every set is logged in thereafter (accepting a plaintext 0600 token and occasional re-logins).
 81. As a Linux developer, I want the agent to run as my host UID:GID, with an entrypoint adding a passwd entry, so that files it writes to my worktrees and `~/.claude/` stay mine.
@@ -162,7 +164,7 @@ The user runs `sandbox jira-123 up --repos api web`, waits for healthchecks and 
 98. As a developer, I want `sandbox SET prune` to clear a set's container infrastructure and release its IP leases, so that addresses return to the pool.
 99. As a developer, I want a bare `sandbox prune` to clear every orphaned environment by reconciling state against Docker labels, so that crash leftovers are easy to clean.
 100. As a developer, I want `down` and `prune` never to touch worktrees, so that the agent's work is safe.
-101. As a developer, I want `sandbox SET destroy` to prune, then remove the worktrees and the set directory including its plan and certificate.
+101. As a developer, I want `sandbox SET destroy` to sync the agent's branches one last time (refusing, unless `--force`, agent commits it can't sync), prune, then remove the clones and the set directory including its plan and certificate.
 102. As a developer, I want `destroy` to refuse if any repo has uncommitted or untracked changes unless `--force` is given.
 103. As a developer, I want `prune` and `destroy` to refuse on a running set.
 104. As a developer, I want `agent/<set>` branches kept by `destroy`, and deleted only with `--branches`, which refuses on unpushed commits unless `--force` is also given.
@@ -188,8 +190,8 @@ Commands take the shape `sandbox [SET] <verb>`. Verb names are reserved and cann
 
 ```
 sandbox SET up [--from TEMPLATE | --repos NAME...] [--recreate]
-sandbox SET down                               # container infra only; worktrees stay
-sandbox SET destroy [--branches] [--force]     # prune + remove worktrees and the set directory
+sandbox SET down                               # container infra; syncs agent/<set>; clones stay
+sandbox SET destroy [--branches] [--force]     # sync + prune + remove clones and the set directory
 sandbox [SET] prune                            # no SET: every orphaned environment
 sandbox [SET] status [--json]                  # state, hostnames and IPs
 sandbox SET claude                             # launch Claude in the agent container
@@ -239,7 +241,7 @@ Provisioning side:
 
 Host-state side (Compose can't manage these; each takes its file paths through its constructor):
 
-- **WorktreeManager**: creates and removes worktrees on `agent/<set>`, serialised per repo; dirty/untracked and unpushed checks; container-based fallback removal.
+- **CloneManager** (was WorktreeManager): creates the agent's clone of each repo on `agent/<set>` and syncs that branch into the source repo, serialised per repo; dirty/untracked, unsynced and unpushed checks (in destroy); container-based fallback removal.
 - **IpPool**: leases one /24 per set and one IP per hostname within it, sticky until `prune`; `flock`-guarded lease file.
 - **CertAuthority**: wraps mkcert to issue and validate per-set `*.<set>.test` certificates; checks `rootCA.pem` exists.
 - **HostsFile**: writes and removes the `# sandbox:<set>` block, via `sudo -n sandbox-hosts` in production.
@@ -288,13 +290,13 @@ Hardened: non-root, capabilities dropped, no Docker socket. Mounts: set director
 
 ### Concurrency
 
-Each process provisions one set. Within a set, steps run in a `TaskGroup` and fail fast. Cross-process shared files (lease file, `/etc/hosts`) are `flock`-guarded; `git worktree add` is serialised per repo. Rollback is shielded from cancellation. `fcntl` locking means Linux and macOS only. (The concept's "sets in parallel under a semaphore with gather" applies to any internal multi-set operation such as bare `prune`; multi-set `up` is out of scope.)
+Each process provisions one set. Within a set, steps run in a `TaskGroup` and fail fast. Cross-process shared files (lease file, `/etc/hosts`) are `flock`-guarded; creating a clone and syncing `agent/<set>` are serialised per repo. Rollback is shielded from cancellation. `fcntl` locking means Linux and macOS only. (The concept's "sets in parallel under a semaphore with gather" applies to any internal multi-set operation such as bare `prune`; multi-set `up` is out of scope.)
 
 ### Filesystem layout
 
 - Config: `~/.config/sandbox/config.yaml` (`ip_pool`, templates root, sets root, default `agent`).
 - Templates: `~/.config/sandbox/plans/`.
-- Sets: `~/sandbox/sets/<set>/` holding `sandbox.yaml`, the rendered override, the leaf certificate, and one worktree per repo.
+- Sets: `~/sandbox/sets/<set>/` holding `sandbox.yaml`, the rendered override, the leaf certificate, and the agent's clone of each repo.
 
 ### Toolchain
 

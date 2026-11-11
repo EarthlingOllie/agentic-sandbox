@@ -1,5 +1,7 @@
 # 09: Hardened agent container with worktrees mounted; `sandbox SET sh`
 
+> **Superseded in part (agent clones):** a set's repos are no longer `git worktree`s of the source. Each is the agent's own `git clone --shared` in the set directory; the source's `.git` is mounted read-only in the agent; sandbox syncs `agent/<set>` into the source on `up`, `SET status`, `down` and `destroy`. See the revision note in `spec.md` and "The agent's clones" in the README.
+
 **What to build:** Every set includes an agent container that can work on the set's worktrees but cannot escape to the host. A developer can open a shell in it, optionally in a specific repo's worktree, or open a shell in a service container (stories 74–78, 81, 82; spec: Agent container).
 
 **Blocked by:** 03 (Compose single repo)

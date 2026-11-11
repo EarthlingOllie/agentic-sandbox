@@ -1,5 +1,7 @@
 # 14: `sandbox status` and `sandbox SET status`, with `--json`
 
+> **Superseded in part (agent clones):** a set's repos are no longer `git worktree`s of the source. Each is the agent's own `git clone --shared` in the set directory; the source's `.git` is mounted read-only in the agent; sandbox syncs `agent/<set>` into the source on `up`, `SET status`, `down` and `destroy`. See the revision note in `spec.md` and "The agent's clones" in the README.
+
 **What to build:** A developer can see every set at a glance with its state (running, stopped, partial, orphaned), and drill into one set to see each service's health, hostnames and IPs, and each repo's branch with a marker for uncommitted work. Script authors get the same models as JSON (stories 88, 89, 91; spec: set states, orphan reconciliation).
 
 **Blocked by:** 04 (rollback and state table), 05 (loopback IP leases)

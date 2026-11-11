@@ -1,8 +1,8 @@
 """``prune``: clear a set's container infrastructure and give its IP lease back to the pool.
 
 Pruning a set removes its Compose project (containers, network, volumes), its hosts block
-and its lease. The set directory, plan and worktrees are never touched: ``destroy`` removes
-those. A set with a plan and anything running is refused (``down`` it first).
+and its lease. The set directory, plan and the agent's clones are never touched: ``destroy``
+removes those. A set with a plan and anything running is refused (``down`` it first).
 
 Bare ``prune`` asks the status reconciliation (``sandbox.status``) for every orphaned set
 (containers or a lease left behind without a plan, e.g. by a crash) and prunes each,

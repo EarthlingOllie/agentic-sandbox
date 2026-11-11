@@ -1,4 +1,5 @@
-"""`sandbox SET up --repos ...`: plan, worktrees, and safety rules (fake git)."""
+"""`sandbox SET up --repos ...`: plan, the agent's clones, syncing agent/SET, and safety rules
+(fake git)."""
 
 import asyncio
 import shutil
@@ -6,7 +7,7 @@ import shutil
 import pytest
 import yaml
 
-from sandbox.worktrees import WorktreeManager
+from sandbox.clones import CloneManager
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
 
@@ -19,7 +20,7 @@ def make_git(env: Env, *names: str, current: str = "main") -> FakeGit:
     return git
 
 
-def test_up_creates_set_dir_plan_and_worktrees(env: Env) -> None:
+def test_up_creates_set_dir_plan_and_clones_and_the_agent_branch(env: Env) -> None:
     git = make_git(env, "api", "web")
     git.repo(env.cwd / "web").current = "release/2.4"
     git.repo(env.cwd / "web").branches.add("release/2.4")
@@ -36,8 +37,10 @@ def test_up_creates_set_dir_plan_and_worktrees(env: Env) -> None:
         }
     }
     for name in ("api", "web"):
-        assert (set_dir / name / ".git").is_file()
-        assert git.repo(env.cwd / name).checked_out["agent/jira-123"] == set_dir / name
+        assert (set_dir / name / ".git").is_dir()
+        assert git.clone(set_dir / name).branch == "agent/jira-123"
+        # Synced into the developer's repo straight away.
+        assert "agent/jira-123" in git.repo(env.cwd / name).branches
     assert "agent/jira-123" in result.stdout
 
 
@@ -166,23 +169,34 @@ def test_missing_base_fails_before_anything_is_created(env: Env) -> None:
     assert not (set_dir / "api").exists()
 
 
-def test_two_sets_on_one_repo_get_separate_worktrees(env: Env) -> None:
+def test_two_sets_on_one_repo_get_separate_clones(env: Env) -> None:
     git = make_git(env, "api")
     assert invoke(["jira-123", "up", "--repos", "api"], git).exit_code == 0
     assert invoke(["jira-456", "up", "--repos", "api"], git).exit_code == 0
-    checked_out = git.repo(env.cwd / "api").checked_out
-    assert checked_out["agent/jira-123"] == env.set_dir("jira-123") / "api"
-    assert checked_out["agent/jira-456"] == env.set_dir("jira-456") / "api"
+    assert git.clone(env.set_dir("jira-123") / "api").branch == "agent/jira-123"
+    assert git.clone(env.set_dir("jira-456") / "api").branch == "agent/jira-456"
+    assert {"agent/jira-123", "agent/jira-456"} <= git.repo(env.cwd / "api").branches
 
 
-def test_worktree_add_is_serialised_per_source_repo(env: Env) -> None:
+def test_up_syncs_the_agents_commits_even_when_the_set_is_already_running(env: Env) -> None:
+    git = make_git(env, "api")
+    assert invoke(["jira-123", "up", "--repos", "api"], git).exit_code == 0
+    git.clone(env.set_dir("jira-123") / "api").commits.append("agent work")
+
+    result = invoke(["jira-123", "up"], git)
+
+    assert result.exit_code == 0, result.output
+    assert git.repo(env.cwd / "api").commits["agent/jira-123"] == ["agent work"]
+
+
+def test_clone_creation_is_serialised_per_source_repo(env: Env) -> None:
     git = FakeGit(add_delay=0.05)
     api = env.make_repo_dir("api")
     web = env.make_repo_dir("web")
     git.add_repo(api)
     git.add_repo(web)
     # Separate managers model separate processes: they share only the lock directory.
-    managers = [WorktreeManager(git, env.state_dir / "locks") for _ in range(4)]
+    managers = [CloneManager(git, env.state_dir / "locks") for _ in range(4)]
 
     async def run_all() -> None:
         async with asyncio.TaskGroup() as group:
@@ -200,4 +214,4 @@ def test_worktree_add_is_serialised_per_source_repo(env: Env) -> None:
 
     asyncio.run(run_all())
     assert git.max_concurrent_adds == {api.resolve(): 1, web.resolve(): 1}
-    assert len(git.repo(api).checked_out) == 4
+    assert len(git.clones) == 8

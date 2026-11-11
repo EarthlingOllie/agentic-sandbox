@@ -22,7 +22,7 @@ def sh(
     ] = None,
     repo: Annotated[
         str | None,
-        typer.Option("--repo", metavar="NAME", help="Start in this repo's worktree."),
+        typer.Option("--repo", metavar="NAME", help="Start in the agent's clone of this repo."),
     ] = None,
 ) -> None:
     """Open a shell in the set's agent (in /workspace/SET) or in one of its services."""

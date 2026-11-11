@@ -77,12 +77,12 @@ def test_up_waits_for_healthy_services_and_down_removes_them(env: Env, mysql_rep
     assert labelled("container") == []
     assert labelled("network") == []
     assert labelled("volume") == []
-    worktree = env.set_dir(SET) / "api"
-    assert git(worktree, "branch", "--show-current") == f"agent/{SET}"
-    assert (worktree / ".sandbox" / "compose.yaml").is_file()
+    clone = env.set_dir(SET) / "api"
+    assert git(clone, "branch", "--show-current") == f"agent/{SET}"
+    assert (clone / ".sandbox" / "compose.yaml").is_file()
 
 
-def test_repo_without_compose_file_provisions_worktree_only(env: Env, mysql_repo: Path) -> None:
+def test_repo_without_compose_file_provisions_only_its_clone(env: Env, mysql_repo: Path) -> None:
     (mysql_repo / ".sandbox" / "compose.yaml").unlink()
     git(mysql_repo, "commit", "--quiet", "-am", "no services")
 

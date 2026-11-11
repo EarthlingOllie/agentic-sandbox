@@ -62,20 +62,20 @@ def test_override_labels_every_resource_with_the_set_name(env: Env) -> None:
     }
 
 
-def test_repo_without_compose_file_still_provisions_its_worktree(env: Env) -> None:
+def test_repo_without_compose_file_still_provisions_its_clone(env: Env) -> None:
     git, compose = FakeGit(), FakeCompose()
     make_repo(env, git, "api", None)
 
     result = invoke(["jira-123", "up", "--repos", "api"], git, compose)
 
     assert result.exit_code == 0, result.output
-    assert (env.set_dir("jira-123") / "api" / ".git").is_file()
+    assert (env.set_dir("jira-123") / "api" / ".git").is_dir()
     # Only the set's own override (the agent) goes to Compose.
     assert compose.running == {"sandbox-jira-123": [env.set_dir("jira-123") / "override.yaml"]}
     assert "services: none" in result.stdout
 
 
-def test_compose_file_without_services_is_worktree_only(env: Env) -> None:
+def test_compose_file_without_services_provisions_only_its_clone(env: Env) -> None:
     git, compose = FakeGit(), FakeCompose()
     api = make_repo(env, git, "api", "services: {}\n")
 

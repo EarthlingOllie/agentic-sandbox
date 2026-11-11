@@ -9,6 +9,7 @@ import typer
 from sandbox.config import load_config
 from sandbox.context import SET_META_KEY, failure, get_deps
 from sandbox.errors import SandboxError
+from sandbox.git import SYNCED
 from sandbox.models.status import RepoStatus, SetStatus, StatusList
 from sandbox.status import StatusReader
 
@@ -69,6 +70,11 @@ def render_set(detail: SetStatus) -> str:
                 [[r.name, _branch(r), _changes(r)] for r in detail.repos],
             )
         )
+        lines.extend(
+            f"{r.name}: agent branch not synced into {r.name}'s repo ({r.sync}): {r.sync_detail}"
+            for r in detail.repos
+            if r.sync not in SYNCED
+        )
     return "\n".join(lines)
 
 
@@ -80,7 +86,7 @@ def _branch(repo: RepoStatus) -> str:
 
 def _changes(repo: RepoStatus) -> str:
     if not repo.exists:
-        return f"worktree missing: {repo.path}"
+        return f"clone missing: {repo.path}"
     marks: list[str] = []
     if repo.modified:
         marks.append("* uncommitted changes")

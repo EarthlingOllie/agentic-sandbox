@@ -10,14 +10,16 @@
   (``sandbox.hooks``), then observe the set's state.
   Nothing is created until all of them pass.
 - The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
-- ``PROVISION_STEPS`` write the plan, ensure worktrees, issue or reuse the set's TLS
+- ``PROVISION_STEPS`` write the plan, ensure the agent's clones, issue or reuse the set's TLS
   certificate (``sandbox.web``) and bring services up healthy as
   Compose project ``sandbox-<set>``, run the repos' init hooks in them (``sandbox.hooks``),
   then write the set's hosts block (``sandbox.hosts``); on failure or Ctrl-C, started steps
   roll back.
 
 A later concern adds its step in its own module and one line to one of the two lists.
-``down`` stops the project, removes the hosts block and leaves worktrees alone.
+After the steps (and on a no-op), ``up`` syncs each clone's ``agent/<set>`` into its source
+repo (``sandbox.clones``). ``down`` stops the project, removes the hosts block, syncs the
+same way and leaves the clones alone.
 """
 
 from collections.abc import Sequence
@@ -36,6 +38,7 @@ from sandbox.bindings import (
     up_lock_path,
 )
 from sandbox.certs import Mkcert, SubprocessMkcert
+from sandbox.clones import CloneManager, CloneOutcome, CloneResult
 from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import resolve as resolve_services
@@ -63,7 +66,6 @@ from sandbox.platforms import Host
 from sandbox.preflight import check_prerequisites
 from sandbox.state import UpAction, decide, observe
 from sandbox.web import check_web_apps, issue_certificate
-from sandbox.worktrees import WorktreeManager, WorktreeOutcome, WorktreeResult
 
 __all__ = ["PROVISION_STEPS", "VALIDATION_STEPS", "Provisioner", "Step", "UpContext"]
 
@@ -74,13 +76,15 @@ class UpResult:
     set_dir: Path
     plan_file: Path
     plan_created: bool
-    worktrees: list[WorktreeResult]  # empty for a no-op
+    clones: list[CloneResult]  # empty for a no-op
     project: str
-    # Service names started under `project`; empty for a worktree-only set.
+    # Service names started under `project`; empty for a set without services.
     services: list[str]
     action: UpAction
     # Each service hostname with its leased IP and native ports.
     bindings: list[Binding]
+    # One line per repo whose agent branch couldn't be synced into its source.
+    sync_notes: list[str]
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,7 @@ class DownResult:
     set_name: str
     set_dir: Path
     project: str
+    sync_notes: list[str]
 
 
 # --- validation steps: create nothing ------------------------------------------------------
@@ -109,7 +114,7 @@ async def _validate_repos(ctx: UpContext) -> None:
 
 
 async def _load_composes(ctx: UpContext) -> None:
-    """Each repo's compose file in repo-name order; repos without one are worktree-only."""
+    """Each repo's compose file in repo-name order; repos without one have no services."""
     errors: list[str] = []
     found: list[RepoCompose] = []
     for name, repo in sorted(ctx.plan.repos.items()):
@@ -162,10 +167,11 @@ async def _write_plan(ctx: UpContext) -> None:
         ctx.plan = on_disk
 
 
-async def _ensure_worktrees(ctx: UpContext) -> None:
-    """One worktree per repo, concurrently; existing ones are left alone. Kept on rollback."""
-    ctx.worktrees = await fail_fast(
-        ctx.worktree_manager.ensure(
+async def _ensure_clones(ctx: UpContext) -> None:
+    """The agent's clone of each repo, concurrently; existing ones are left alone. Kept on
+    rollback."""
+    ctx.clones = await fail_fast(
+        ctx.clone_manager.ensure(
             repo=name,
             source=repo.source,
             path=ctx.set_dir / name,
@@ -174,8 +180,8 @@ async def _ensure_worktrees(ctx: UpContext) -> None:
         )
         for name, repo in sorted(ctx.plan.repos.items())
     )
-    for result in ctx.worktrees:
-        if result.outcome is WorktreeOutcome.REUSED_BRANCH:
+    for result in ctx.clones:
+        if result.outcome is CloneOutcome.REUSED_BRANCH:
             ctx.warn(
                 f"{result.repo}: reusing existing branch {result.branch}; "
                 f"base {result.base!r} from the plan was ignored"
@@ -226,7 +232,7 @@ VALIDATION_STEPS: Final[list[Step]] = [
 
 PROVISION_STEPS: Final[list[Step]] = [
     Step("plan", _write_plan),
-    Step("worktrees", _ensure_worktrees),
+    Step("clones", _ensure_clones),
     Step("stop-for-recreate", _stop_for_recreate),
     Step("certificate", issue_certificate),
     Step("compose-up", _compose_up, rollback=_compose_down),
@@ -256,7 +262,7 @@ class Provisioner:
         self._git = git
         self._compose = compose
         self._warn = warn
-        self._worktrees = WorktreeManager(git, config.lock_dir)
+        self._clones = CloneManager(git, config.lock_dir)
 
     def set_dir(self, set_name: str) -> Path:
         return self._config.sets_root / set_name
@@ -293,7 +299,7 @@ class Provisioner:
             git=self._git,
             compose=self._compose,
             warn=self._warn,
-            worktree_manager=self._worktrees,
+            clone_manager=self._clones,
             set_name=set_name,
             set_dir=set_dir,
             plan_file=plan_file,
@@ -314,6 +320,7 @@ class Provisioner:
                 await validate(VALIDATION_STEPS, ctx)
                 if ctx.action is not UpAction.NOOP:
                     await provision(PROVISION_STEPS, ctx)
+                synced = await self._clones.sync_set(set_dir, ctx.plan, ctx.branch)
             except BaseException:
                 if ctx.lease_created and not plan_file.exists():
                     # Nothing else knows this set yet: give back what this `up` leased.
@@ -324,15 +331,17 @@ class Provisioner:
             set_dir,
             plan_file,
             ctx.plan_created,
-            ctx.worktrees,
+            ctx.clones,
             ctx.project,
             ctx.services,
             ctx.action,
             bindings(ctx.set_name, ctx.graph, ctx.lease, extra_hostnames(ctx.web_apps)),
+            [s.note() for s in synced if not s.synced],
         )
 
     async def down(self, set_name: str) -> DownResult:
-        """Stop the set's containers and remove its network and volumes; keep worktrees."""
+        """Stop the set's containers and remove its network and volumes, then sync the
+        agent's branches into the source repos; the clones are kept."""
         validate_set_name(set_name)
         set_dir = self.set_dir(set_name)
         if not plan_path(set_dir).exists():
@@ -340,7 +349,9 @@ class Provisioner:
         project = project_name(set_name)
         await self._compose.down(project)
         await self._hosts.remove(set_name)
-        return DownResult(set_name, set_dir, project)
+        plan = load_set_plan(set_dir)
+        synced = await self._clones.sync_set(set_dir, plan, agent_branch(set_name))
+        return DownResult(set_name, set_dir, project, [s.note() for s in synced if not s.synced])
 
     async def _requested_plan(
         self, cwd: Path, repos: Sequence[str] | None, template: TemplatePlan | None
@@ -415,7 +426,7 @@ class Provisioner:
             if resolved is None:
                 errors.append(
                     f"{name}: {source} has a detached HEAD; check out the branch to base "
-                    "the worktree on"
+                    "the agent's clone on"
                 )
                 continue
             pinned[name] = SetRepo(source=source, base=resolved)

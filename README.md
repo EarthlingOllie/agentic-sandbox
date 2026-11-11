@@ -1,18 +1,20 @@
 # agentic-environment-provisioning
 
-`sandbox` provisions isolated **sets** for coding agents: a git worktree per repo on
-branch `agent/<set>`, deduplicated backing services, and a hardened agent container.
+`sandbox` provisions isolated **sets** for coding agents: the agent's own clone of each repo
+on branch `agent/<set>` (synced back into your repo as `agent/<set>`), deduplicated backing
+services, and a hardened agent container.
 See [`.scratch/sandbox-mvp/spec.md`](.scratch/sandbox-mvp/spec.md) for the full MVP spec.
 
 Status: early MVP. `sandbox SET up --repos NAME...` creates the set directory, writes its
-plan, cuts the worktrees, then starts the services a repo declares in
+plan, clones each repo for the agent, then starts the services a repo declares in
 `.sandbox/compose.yaml` as Compose project `sandbox-<set>` and waits until they are healthy
-(a repo without `compose.yaml` takes part with its worktree only). Inside the set, services
+(a repo without `compose.yaml` takes part with its clone only). Inside the set, services
 reach each other by their short names (`mysql`). `sandbox SET down` stops the containers and
-removes the set's network and volumes; worktrees and the plan are kept. Repos that declare
+removes the set's network and volumes; the clones and the plan are kept. Repos that declare
 the same service share one instance of it (see [Shared services](#shared-services)). Once
 the services are up, `up` writes the set's hostnames into the hosts file (see
-[Hosts file](#hosts-file)); `down` removes them.
+[Hosts file](#hosts-file)); `down` removes them. How the agent's commits reach your repo
+is in [The agent's clones](#the-agents-clones).
 
 ```console
 $ cd ~/code            # holds ./api and ./web, each with a .sandbox/ directory
@@ -27,8 +29,38 @@ $ sandbox jira-123 sh --repo api   # a shell in the agent, in /workspace/jira-12
 $ sandbox jira-123 sh mysql        # a shell in the mysql service container
 $ sandbox jira-123 claude          # Claude Code in the agent, in /workspace/jira-123
 $ sandbox jira-123 down
-set jira-123: sandbox-jira-123 stopped; worktrees kept in /home/me/sandbox/sets/jira-123
+set jira-123: sandbox-jira-123 stopped; clones kept in /home/me/sandbox/sets/jira-123
+$ git -C api log --oneline -1 agent/jira-123   # the agent's commits, synced by down
 ```
+
+## The agent's clones
+
+The agent never works in your repo. `up` gives it a clone of each repo at
+`<set dir>/<repo>` (`git clone --shared`: it borrows your repo's objects read-only through
+`objects/info/alternates`, so it costs next to nothing), checked out on a new branch
+`agent/<set>` cut from the plan's `base`, or on your repo's existing `agent/<set>` if one
+survived an earlier set. Its `origin` is your repo, so the agent can `git fetch origin` to
+see your latest work. In its clone the agent commits, branches, rebases and configures git
+as it likes; none of it is visible in your repo until sandbox **syncs** it.
+
+`up`, `sandbox SET status`, `down` and `destroy` sync: they fetch the clone's
+`agent/<set>` into your repo's `agent/<set>` (and record the agent's tip as
+`refs/sandbox/agent/<set>`, which keeps its objects safe from `git gc`). So
+**`agent/<set>` in your repo is not live**: it moves only when one of those commands runs.
+Only `agent/<set>` comes back; the agent's other branches stay in its clone. A sync never
+loses work:
+
+- it fast-forwards your `agent/<set>`, or follows history the agent rewrote (an amend, a
+  rebase) if you haven't touched the branch since the last sync;
+- if you committed on `agent/<set>` yourself, or have it checked out, it leaves the branch
+  alone and says so (`up` and `down` warn, `status` notes it); the agent's commits are at
+  `refs/sandbox/agent/<set>` for you to merge. `destroy` refuses such a set unless
+  `--force`.
+
+Sets created by earlier versions of sandbox (whose repos were `git worktree`s of your repo)
+show their repos as missing: `destroy` them (and `git worktree prune` in each repo) and
+`up` them again.
+
 
 `up` renders a per-set `override.yaml` into the set directory and runs
 `docker compose -p sandbox-<set> -f <api>/.sandbox/compose.yaml -f <web>/... -f override.yaml up -d --wait`,
@@ -85,7 +117,7 @@ mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS api"
 ```
 
 A hook for a service the set does not run fails `up` before any container starts. A hook
-that exits non-zero fails the set and rolls it back (plan and worktrees are kept); the
+that exits non-zero fails the set and rolls it back (plan and clones are kept); the
 error shows the hook's output. Hooks are read from the repo's source checkout, like its
 compose file.
 
@@ -114,7 +146,7 @@ Sandbox then:
   it read-only at `/sandbox/tls/cert.pem` and `/sandbox/tls/key.pem` (the key is readable
   by any user, so the app can run as whatever user its image uses). Later `up`s reuse it
   while it verifies against the CA and has more than 7 days left;
-- injects `WORKTREE` (the repo's worktree, `<set dir>/<repo>`) and `APP_URL`
+- injects `WORKTREE` (the repo's checkout in the set, the agent's clone at `<set dir>/<repo>`) and `APP_URL`
   (`https://<repo>.<set>.test`) into the service's environment, and nothing else (plus
   `VITE_HMR_HOST` with `vite`, below);
 - routes each extra host in `hosts` (`admin` becomes `admin.<set>.test`) to the same
@@ -140,7 +172,7 @@ host matches a service or another web app). Sets without a web app need neither 
 
 Every set also runs a hardened `agent` service (a repo may not declare a service of that
 name). `sandbox SET sh` opens a shell in it at `/workspace/<set>/`; `--repo NAME` starts in
-that repo's worktree. `sandbox SET sh SERVICE` opens a shell in one of the set's services
+the agent's clone of that repo. `sandbox SET sh SERVICE` opens a shell in one of the set's services
 instead; an unknown name fails and points at `--repo`.
 
 - **Image**: the bundled default (`src/sandbox/images/agent/`: Ubuntu 24.04 with `sh`,
@@ -148,28 +180,29 @@ instead; an unknown name fails and points at `--repo`.
   `sandbox-agent:<content hash>` and never pulls it from a registry. It works under any
   UID with a writable `HOME` (`/home/agent`): its entrypoint adds a passwd/group entry for
   the UID:GID it runs as.
-- **User**: your host UID:GID, so files the agent writes in the worktrees and in
+- **User**: your host UID:GID, so files the agent writes in its clones and in
   `~/.claude/` stay yours. If sandbox itself runs as root, the agent runs as `1000:1000`;
   it never runs as root.
 - **Hardening**: `cap_drop: [ALL]`, `no-new-privileges`, and the Docker socket is never
   mounted.
-- **Mounts** (read-write binds unless noted): the set directory at `/workspace/<set>/`
-  (its `sandbox.yaml` read-only); each source repo's `.git` at its exact host path,
-  because a worktree's `.git` file points there (so the agent can see every branch of the
-  repo), **read-only**, with read-write binds over only what committing, branching and
-  fetching in the set's worktree write: `objects/`, `refs/`, `logs/` (`reftable/` in
-  repos that use it) and the set's own `worktrees/<name>/`. Config and hooks there are
-  what git on the host reads, so the agent can't change them, even after host git
-  replaces `.git/config` (it renames a new file over it). So in the agent `git config`,
-  `git push -u`, deleting a packed branch and `git gc` fail; commit, branch, fetch and
-  push work. Independently, every git command sandbox runs on the host uses isolated
-  config (no system or global config, nothing from `GIT_*` variables, and hooks,
-  fsmonitor, editors, pagers and other program-running settings pinned off), reads
-  nothing from a worktree's git dir but its `HEAD` and index, and ignores any `.git` or
-  `commondir` file the agent planted. (So filters such as Git LFS's, configured in your
-  global config, don't run when sandbox creates a worktree.) The worktrees themselves are
-  the agent's: treat running git in one on the host like running it in a repo you
-  cloned from a stranger. Also: the host's `~/.claude/` at
+- **Mounts** (read-write binds unless noted): the set directory at `/workspace/<set>/`,
+  which holds the agent's clones (its `sandbox.yaml` read-only); each source repo's `.git`,
+  **read-only as a whole**, at its exact host path, because the clones borrow its objects
+  and fetch from it there. The agent can write nothing in your repo's `.git`: not its
+  config or hooks, and not a symlink under `refs/`, `logs/` or `objects/` that git on the
+  host (sandbox's, or your own) would later write through. Everything in a clone, `.git`
+  included, is the agent's, so sandbox's host git treats a clone as an untrusted repository:
+  syncing writes only in your repo (reading the clone through `git upload-pack --strict`,
+  which git documents as safe in an untrusted repository, and refusing a clone whose `.git`
+  is a symlink or file, or whose `commondir` or `alternates` point anywhere else), and
+  `status` reads a clone's `HEAD`, branch and index without following symlinks into a git
+  dir sandbox writes itself, so the clone's config and hooks are never read. Every git
+  command sandbox runs on the host also uses isolated config (no system or global config,
+  nothing from `GIT_*` variables, and hooks, fsmonitor, editors, pagers and other
+  program-running settings pinned off). (So filters such as Git LFS's, configured in your
+  global config, don't run when sandbox checks out a clone.) Treat running git yourself in
+  a clone on the host like running it in a repo you cloned from a stranger; in your own
+  repo it is safe. Also: the host's `~/.claude/` at
   `/home/agent/.claude` with `CLAUDE_CONFIG_DIR=/home/agent/.claude`, so all sets share one
   login. Your main working trees and `~/.claude.json` are never mounted. In a set with a
   web app, the mkcert CA's `rootCA.pem` is also mounted read-only (see above).
@@ -253,9 +286,11 @@ Enforced egress restriction is out of scope for the MVP.
 ## Status
 
 `sandbox status` lists every set with its state; `sandbox SET status` shows one set's
-services (container state, health, hostname, leased IP) and repos (branch, plus `*` for
-uncommitted changes and `?` for untracked files). `--json` prints the same Pydantic models
-the tables are rendered from.
+services (container state, health, hostname, leased IP) and the agent's clones (branch,
+plus `*` for uncommitted changes and `?` for untracked files). It first syncs the agent's
+`agent/<set>` into each repo, and notes any repo it couldn't sync (`sync` and
+`sync_detail` in `--json`). `--json` prints the same Pydantic models the tables are
+rendered from.
 
 ```console
 $ sandbox status
@@ -308,7 +343,7 @@ one).
 `sandbox SET prune` removes a stopped set's containers, network, volumes and hosts block,
 and releases its IP lease back to the pool; the next `up` leases it a fresh block. It
 refuses while any of the set's services run (`sandbox SET down` first), or while an `up`
-of the set is in progress. The set directory, plan and worktrees are never touched.
+of the set is in progress. The set directory, plan and the agent's clones are never touched.
 
 Bare `sandbox prune` does the same for every **orphaned** set `status` reports (leftovers
 of crashes). A set whose `up` is still in progress is skipped: a brand-new set holds its
@@ -319,19 +354,24 @@ command then exits 1.
 
 ## Destroy
 
-`sandbox SET destroy` removes a set for good: it prunes it (as above), removes each
-worktree with `git worktree remove` (so the source repos keep no stale worktree metadata),
-and deletes the set directory with its plan and certificate. Every check runs before
-anything is removed, so a refused `destroy` changes nothing:
+`sandbox SET destroy` removes a set for good: it syncs each clone's `agent/<set>` into your
+repo one last time (see [The agent's clones](#the-agents-clones)), prunes the set (as
+above), deletes the agent's clones and the set directory with its plan and certificate,
+and drops `refs/sandbox/agent/<set>`. Your repos hold nothing else of the set. Every
+check runs before anything is removed, so a refused `destroy` changes nothing (beyond the
+sync):
 
 - a set with anything running is refused, even with `--force` (`sandbox SET down` first);
-- a worktree with uncommitted changes or untracked files is refused, naming the repo and
+- a repo whose `agent/<set>` couldn't be synced (you committed on the branch too, have it
+  checked out, or the fetch failed) is refused, naming it, unless `--force` (which
+  discards the agent's commits that weren't synced);
+- a clone with uncommitted changes or untracked files is refused, naming the repo and
   the paths, unless `--force` (which discards them);
 - the `agent/SET` branches are kept by default. `--branches` deletes them too, but refuses
   a branch holding commits that are on no remote-tracking branch, other branch or tag
   (named in the error) unless `--force` is also given.
 
-Containers can leave root-owned files in a worktree (a service writing to a bind mount as
+Containers can leave root-owned files in a clone (a service writing to a bind mount as
 root). On Linux, `destroy` deletes those from a throwaway root container
 (`docker run --rm ubuntu:24.04 ...`, the default agent image's base), so sudo is never
 needed. On macOS Docker Desktop maps container files to the developer, so this never arises.
@@ -498,9 +538,9 @@ and for `v*` tags, not on every push. Before each release a person also works th
   `Step(name, run, rollback=...)` in its own module plus one line in
   `provisioner.VALIDATION_STEPS` (checks that create nothing; all finish before any container
   starts) or `provisioner.PROVISION_STEPS` (actions; on failure or Ctrl-C the started ones roll
-  back in reverse order, shielded from cancellation, keeping plan and worktrees). Per-repo
+  back in reverse order, shielded from cancellation, keeping plan and clones). Per-repo
   fan-out uses `pipeline.fail_fast` (a `TaskGroup`). The state table is in `sandbox/state.py`.
 - **Host state is shared across processes**, so writes to it are guarded by `flock`
-  (`sandbox.locking.file_lock`); `git worktree add` is serialised per source repo.
+  (`sandbox.locking.file_lock`); creating a clone and syncing `agent/<set>` are serialised per source repo.
 - **User-facing failures raise `SandboxError`**; the CLI prints `error: <message>` and
   exits 1 (usage errors exit 2). No tracebacks for expected failures.

@@ -32,7 +32,7 @@ def compose_file(source: Path) -> Path:
 
 
 def load_repo_compose(repo: str, source: Path) -> RepoCompose | None:
-    """Read the repo's compose file, or None when it has none (worktree-only repo)."""
+    """Read the repo's compose file, or None when it has none (a repo without services)."""
     path = compose_file(source)
     if not path.exists():
         return None

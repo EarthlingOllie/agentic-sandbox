@@ -151,8 +151,8 @@ def test_up_from_copies_the_template_and_pins_missing_bases(
             "web": {"source": str(web), "base": "feature/x"},
         }
     }
-    assert git.repo(api).checked_out["agent/jira-123"] == set_dir / "api"
-    assert git.repo(web).checked_out["agent/jira-123"] == set_dir / "web"
+    assert git.clone(set_dir / "api").branch == "agent/jira-123"
+    assert git.clone(set_dir / "web").branch == "agent/jira-123"
     # The template itself is left as it was: still reusable.
     assert "base" not in read_template(env, "stack")["repos"]["web"]
 

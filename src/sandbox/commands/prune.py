@@ -12,7 +12,7 @@ from sandbox.prune import Pruner
 
 def prune(ctx: typer.Context) -> None:
     """Remove a stopped set's containers, network, volumes and hosts block, and release
-    its IP lease; without SET, do that for every orphaned set. Worktrees are never touched.
+    its IP lease; without SET, do that for every orphaned set. The agent's clones are never touched.
     """
     set_name = ctx.meta.get(SET_META_KEY)
     try:
@@ -22,7 +22,7 @@ def prune(ctx: typer.Context) -> None:
             pruned = asyncio.run(pruner.prune_set(set_name))
             typer.echo(
                 f"set {pruned.set_name}: pruned {pruned.project} (containers, network, "
-                "volumes, hosts block, IP lease); plan and worktrees kept"
+                "volumes, hosts block, IP lease); plan and clones kept"
             )
             return
         report = asyncio.run(pruner.prune_orphans())
@@ -32,7 +32,7 @@ def prune(ctx: typer.Context) -> None:
         typer.echo("no orphaned sets to prune")
         return
     for done in report.pruned:
-        typer.echo(f"set {done.set_name}: pruned {done.project}; worktrees kept")
+        typer.echo(f"set {done.set_name}: pruned {done.project}; clones kept")
     for failed in report.failed:
         typer.echo(f"error: set {failed.set_name}: prune failed: {failed.error}", err=True)
     if report.failed:

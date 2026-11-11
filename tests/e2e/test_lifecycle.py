@@ -3,7 +3,8 @@
 ``sudo sandbox setup`` → two sets ``up`` in parallel, each with two repos sharing ``mysql``
 (one ships an init hook) and a web app with an extra host → HTTPS by hostname through the
 real ``/etc/hosts`` and the installed mkcert CA from the host, and over the set network
-from the agent → ``down`` → ``destroy`` → ``sudo sandbox setup --uninstall``.
+from the agent → the agent commits in its clone → ``down`` brings that commit into the repo
+as ``agent/<set>`` → ``destroy`` → ``sudo sandbox setup --uninstall``.
 """
 
 import json
@@ -106,22 +107,29 @@ def test_setup_up_https_down_destroy_uninstall(machine: Machine) -> None:
     )]  # fmt: skip
     assert mysql[0] != mysql[1]
 
-    # down: containers stop, the hosts block goes, worktrees stay.
+    # The agent commits in its own clone; the repo's agent/<set> doesn't move until synced.
+    agent_commit = (
+        "cd api && echo work > agent.txt && git add agent.txt"
+        " && git -c user.name=agent -c user.email=agent@example.invalid commit -q -m 'agent work'"
+    )
+    in_container(machine, first, "agent", "sh", "-c", agent_commit)
+
+    # down: containers stop, the hosts block goes, the clones stay, agent/<set> is synced.
     for name in (first, second):
         machine.run(name, "down").check()
         assert services(machine, name, "--all") == []
         assert block_start(name) not in hosts_text()
         assert (machine.sets_root / name / "web").is_dir()
     assert machine.command(["getent", "hosts", f"web.{first}.test"]).status != 0
+    log = ["git", "-C", str(machine.code / "api"), "log", "-1", "--format=%s", f"agent/{first}"]
+    assert machine.command(log).check().output.strip() == "agent work"
 
-    # destroy: worktrees (through git), branches and the set directory.
-    for name in (first, second):
-        machine.run(name, "destroy", "--branches").check()
+    # destroy: the clones, branches (the agent's commit is unpushed: --force) and set dir.
+    for name, flags in ((first, ["--force"]), (second, [])):
+        machine.run(name, "destroy", "--branches", *flags).check()
         assert not (machine.sets_root / name).exists()
         for repo in REPOS:
             source = machine.code / repo
-            worktrees = machine.command(["git", "-C", str(source), "worktree", "list"])
-            assert str(machine.sets_root / name) not in worktrees.check().output
             branches = machine.command(["git", "-C", str(source), "branch", "--list"])
             assert f"agent/{name}" not in branches.check().output
 

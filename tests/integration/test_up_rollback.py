@@ -105,7 +105,7 @@ def _cleanup() -> Iterator[None]:
         )
 
 
-def test_parallel_sets_fail_independently_and_rollback_keeps_worktrees(env: Env) -> None:
+def test_parallel_sets_fail_independently_and_rollback_keeps_clones(env: Env) -> None:
     make_repo(env, "good", quick_service(healthy=True))
     make_repo(env, "bad", quick_service(healthy=False))
 
@@ -122,8 +122,8 @@ def test_parallel_sets_fail_independently_and_rollback_keeps_worktrees(env: Env)
         f"{project_name(OK)}-app-1",
     ]
     assert leftovers(BAD) == []
-    worktree = env.set_dir(BAD) / "bad"
-    assert git(worktree, "branch", "--show-current") == f"agent/{BAD}"
+    clone = env.set_dir(BAD) / "bad"
+    assert git(clone, "branch", "--show-current") == f"agent/{BAD}"
     assert (env.set_dir(BAD) / "sandbox.yaml").is_file()
 
 
@@ -184,4 +184,4 @@ def test_ctrl_c_mid_up_leaves_no_orphaned_resources(
     assert "interrupted" in err
     assert f"rolled back set '{INT}'" in err
     assert leftovers(INT) == []
-    assert (env.set_dir(INT) / "api" / ".git").is_file()
+    assert (env.set_dir(INT) / "api" / ".git").is_dir()

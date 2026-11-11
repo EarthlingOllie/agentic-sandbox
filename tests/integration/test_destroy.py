@@ -1,5 +1,6 @@
-"""`destroy` against real git: every refusal, the forced paths, clean worktree metadata in
-the source repos, and (with real Docker) the root-owned-file fallback."""
+"""`destroy` against real git: every refusal, the forced paths, the agent's last commits
+synced into the source repos (which hold nothing else of the set), and (with real Docker)
+the root-owned-file fallback."""
 
 import asyncio
 import os
@@ -42,35 +43,29 @@ def branches(repo: Path) -> list[str]:
     return git(repo, "branch", "--format=%(refname:short)").splitlines()
 
 
-def worktree_paths(repo: Path) -> list[str]:
-    listing = git(repo, "worktree", "list", "--porcelain").splitlines()
-    return [line.removeprefix("worktree ") for line in listing if line.startswith("worktree ")]
-
-
-def commit(worktree: Path, name: str, message: str) -> None:
-    (worktree / name).write_text(message + "\n")
-    git(worktree, "add", name)
-    git(worktree, "commit", "--quiet", "-m", message)
+def commit(clone: Path, name: str, message: str) -> None:
+    (clone / name).write_text(message + "\n")
+    git(clone, "add", name)
+    git(clone, "commit", "--quiet", "-m", message)
 
 
 def assert_destroyed(env: Env, repos: list[Path], set_name: str = SET) -> None:
     assert not env.set_dir(set_name).exists()
     for repo in repos:
-        # Removed through git: no worktree entry and no leftover metadata in the source repo.
-        assert worktree_paths(repo) == [str(repo)]
-        assert not (repo / ".git" / "worktrees").exists() or not any(
-            (repo / ".git" / "worktrees").iterdir()
-        )
+        # Nothing of the set is left in the source repo but (unless deleted) its branch.
+        assert git(repo, "for-each-ref", "refs/sandbox") == ""
+        assert not (repo / ".git" / "worktrees").exists()
+        assert git(repo, "fsck", "--no-progress", "--no-dangling") == ""
 
 
 def assert_intact(env: Env, repos: list[Path]) -> None:
     assert (env.set_dir(SET) / "sandbox.yaml").is_file()
     for repo in repos:
-        assert str(env.set_dir(SET) / repo.name) in worktree_paths(repo)
+        assert git(env.set_dir(SET) / repo.name, "branch", "--show-current") == BRANCH
         assert BRANCH in branches(repo)
 
 
-def test_destroy_removes_worktrees_through_git_and_keeps_branches(
+def test_destroy_syncs_the_agents_last_commits_removes_clones_and_keeps_branches(
     env: Env, make_repo: MakeRepo
 ) -> None:
     repos = make_set(env, make_repo, "api", "web")
@@ -133,9 +128,9 @@ def test_destroy_force_discards_uncommitted_and_untracked_work(
     env: Env, make_repo: MakeRepo
 ) -> None:
     repos = make_set(env, make_repo, "api")
-    worktree = env.set_dir(SET) / "api"
-    (worktree / ".sandbox" / "compose.yaml").write_text("services: {}\n# x\n")
-    (worktree / "notes.txt").write_text("todo\n")
+    clone = env.set_dir(SET) / "api"
+    (clone / ".sandbox" / "compose.yaml").write_text("services: {}\n# x\n")
+    (clone / "notes.txt").write_text("todo\n")
 
     code, out, err = run(SET, "destroy", "--force")
 
@@ -155,6 +150,22 @@ def test_destroy_branches_deletes_agent_branches_without_unpushed_commits(
     assert branches(repos[0]) == ["main"]
 
 
+def test_destroy_refuses_agent_commits_it_cannot_sync(env: Env, make_repo: MakeRepo) -> None:
+    repos = make_set(env, make_repo, "api")
+    # The developer committed on agent/<set> too: syncing would overwrite one side.
+    developers = git(repos[0], "commit-tree", "-p", BRANCH, "-m", "dev", f"{BRANCH}^{{tree}}")
+    git(repos[0], "update-ref", f"refs/heads/{BRANCH}", developers)
+    commit(env.set_dir(SET) / "api", "feature.txt", "agent work")
+
+    code, _, err = run(SET, "destroy")
+
+    assert code == 1
+    assert "diverged" in err
+    assert "--force" in err
+    assert_intact(env, repos)
+    assert git(repos[0], "rev-parse", BRANCH) == developers
+
+
 def test_destroy_branches_refuses_unpushed_commits(env: Env, make_repo: MakeRepo) -> None:
     repos = make_set(env, make_repo, "api")
     commit(env.set_dir(SET) / "api", "feature.txt", "agent work")
@@ -171,12 +182,13 @@ def test_destroy_branches_deletes_a_branch_whose_commits_are_pushed(
     env: Env, make_repo: MakeRepo
 ) -> None:
     repos = make_set(env, make_repo, "api")
-    worktree = env.set_dir(SET) / "api"
-    commit(worktree, "feature.txt", "agent work")
+    clone = env.set_dir(SET) / "api"
+    commit(clone, "feature.txt", "agent work")
     remote = env.root / "remote.git"
     subprocess.run(["git", "init", "--quiet", "--bare", str(remote)], check=True)
     git(repos[0], "remote", "add", "origin", str(remote))
-    git(worktree, "push", "--quiet", "origin", BRANCH)
+    assert run(SET, "status")[0] == 0  # brings the agent's commit into the repo
+    git(repos[0], "push", "--quiet", "origin", BRANCH)
 
     code, out, err = run(SET, "destroy", "--branches")
 
@@ -226,7 +238,7 @@ def test_empty_as_root_deletes_root_owned_files(env: Env) -> None:
 
 
 @docker_only
-def test_destroy_deletes_root_owned_files_left_in_a_worktree(env: Env, make_repo: MakeRepo) -> None:
+def test_destroy_deletes_root_owned_files_left_in_a_clone(env: Env, make_repo: MakeRepo) -> None:
     set_name = unique_set("destroy")
     repo = make_repo("api")
     (repo / ".gitignore").write_text("cache/\n")

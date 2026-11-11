@@ -1,5 +1,5 @@
 """A real `prune` clears a stopped set's containers, network, volumes, hosts block and
-lease, keeps its worktree, and a fresh `up` leases it a new block."""
+lease, keeps its clone, and a fresh `up` leases it a new block."""
 
 import asyncio
 import hashlib
@@ -97,7 +97,7 @@ def test_prune_clears_the_set_and_a_fresh_up_gets_a_new_block(env: Env, mysql_re
     assert project_resources(project) == []
     assert leases.read(SET) is None
     assert f"# sandbox:{SET}" not in env.hosts_file.read_text()
-    assert (env.set_dir(SET) / "api" / ".git").is_file()
+    assert (env.set_dir(SET) / "api" / ".git").is_dir()
     assert (env.set_dir(SET) / "sandbox.yaml").is_file()
 
     # Another set takes the released block, so the fresh lease is visibly a new one.

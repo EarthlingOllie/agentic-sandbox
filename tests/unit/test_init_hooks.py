@@ -144,7 +144,7 @@ def test_failing_hook_fails_the_set_rolls_it_back_and_shows_its_output(env: Env)
     assert compose.calls[-1] == ("down", PROJECT)
     # The first failure stops the rest: web's hook never ran.
     assert hook_execs(compose) == [("mysql", ["sh", "/sandbox/init/api/mysql.sh"])]
-    # Plan and worktrees are kept, so a fixed hook can be retried with `up`.
+    # Plan and clones are kept, so a fixed hook can be retried with `up`.
     assert (env.set_dir("jira-123") / "sandbox.yaml").exists()
 
 

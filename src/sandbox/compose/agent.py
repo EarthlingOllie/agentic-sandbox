@@ -6,13 +6,14 @@ rebuilt) as the developer's
 host UID:GID, never root, with every capability dropped, ``no-new-privileges``, and no
 Docker socket. It sees exactly:
 
-- the set directory at ``/workspace/<set>/`` (where shells start), its plan
-  ``sandbox.yaml`` read-only (the plan pins the agent override);
-- each source repo's ``.git`` at its exact host path, because a worktree's ``.git`` file
-  points there: read-only, with read-write only what committing, branching and fetching in
-  the set's own worktree write (``objects``, ``refs``, ``logs`` and that worktree's
-  ``worktrees/<name>``), so the agent can't write config or hooks that host-side git would
-  run. The source's working tree itself is never mounted;
+- the set directory at ``/workspace/<set>/`` (where shells start), holding the agent's own
+  clone of each repo, its plan ``sandbox.yaml`` read-only (the plan pins the agent
+  override);
+- each source repo's ``.git`` read-only at its exact host path, because each clone borrows
+  the source's objects from there (``objects/info/alternates``) and its ``origin`` remote
+  points there. Nothing of the developer's repo is writable: the agent commits, branches
+  and fetches in its clone, and sandbox brings ``agent/<set>`` back (``sandbox.clones``).
+  The source's working tree itself is never mounted;
 - the host's ``~/.claude/`` at ``/home/agent/.claude`` (``CLAUDE_CONFIG_DIR``), so every
   set shares one login. The host's ``~/.claude.json`` is not mounted;
 - in a set with a web app, the mkcert CA's ``rootCA.pem`` (never its key) read-only at
@@ -37,7 +38,6 @@ from pydantic import AfterValidator
 
 from sandbox.compose import AGENT_SERVICE, SET_LABEL
 from sandbox.compose.web import CA_TARGET, read_only_bind
-from sandbox.git import worktree_git_dir
 from sandbox.names import PLAN_FILENAME
 
 AGENT_HOME: Final = "/home/agent"
@@ -170,7 +170,6 @@ def agent_fragment(
     the override's extra services, networks and volumes."""
     # Created here because Docker would otherwise create a missing bind source as root.
     host_claude_dir().mkdir(parents=True, exist_ok=True)
-    _ensure_git_dirs(sources)
     guarantees = _guarantees(set_name, set_dir, sources, root_ca)
     service: dict[str, Any] = {
         "image": default_image(),
@@ -225,43 +224,6 @@ def _bind(source: Path, target: str) -> dict[str, Any]:
     return {"type": "bind", "source": str(source), "target": target}
 
 
-# What the agent writes in a source's ``.git`` to commit, branch and fetch: objects, refs
-# and their logs (``reftable`` replaces refs in repos that use it). Everything else there,
-# config and hooks above all, is read-only: host-side git reads it.
-_AGENT_WRITABLE_GIT_DIRS = ("objects", "refs", "logs", "reftable")
-
-
-def _git_dir_mounts(source: Path, worktree: Path) -> list[dict[str, Any]]:
-    """A source repo's ``.git`` read-only, with read-write binds over what the agent writes.
-
-    Binding the directory read-only (not just its config) matters: host git replaces
-    ``.git/config`` by renaming a new file over it, which would detach a bind of the file
-    alone and leave the agent the read-write directory's new entry.
-    """
-    git_dir = source / ".git"
-    writable = [git_dir / name for name in _AGENT_WRITABLE_GIT_DIRS]
-    own = worktree_git_dir(source, worktree)
-    if own is not None:
-        writable.append(own)
-    return [
-        read_only_bind(git_dir, str(git_dir)),
-        *(_bind(path, str(path)) for path in writable if _is_real_dir(path)),
-    ]
-
-
-def _is_real_dir(path: Path) -> bool:
-    return path.is_dir() and not path.is_symlink()
-
-
-def _ensure_git_dirs(sources: Mapping[str, Path]) -> None:
-    """Create ``logs`` where a repo has none yet: git creates it on the first logged ref
-    update, which the agent's read-only ``.git`` would refuse."""
-    for source in sources.values():
-        git_dir = source / ".git"
-        if _is_real_dir(git_dir) and not (git_dir / "reftable").exists():
-            (git_dir / "logs").mkdir(exist_ok=True)
-
-
 def _guarantees(
     set_name: str, set_dir: Path, sources: Mapping[str, Path], root_ca: Path | None = None
 ) -> dict[str, Any]:
@@ -276,7 +238,8 @@ def _guarantees(
         # Read-only: the plan pins the agent override, so an agent that could edit it
         # would choose its own settings at the developer's next `up`.
         {**_bind(set_dir / PLAN_FILENAME, plan_target), "read_only": True},
-        *(m for n in sorted(sources) for m in _git_dir_mounts(sources[n], set_dir / n)),
+        # Never writable: host git writes there (sandbox's sync, the developer's own git).
+        *(read_only_bind(sources[n] / ".git", str(sources[n] / ".git")) for n in sorted(sources)),
         _bind(host_claude_dir(), AGENT_CLAUDE_DIR),
     ]
     if root_ca is not None:

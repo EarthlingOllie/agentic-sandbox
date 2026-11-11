@@ -1,5 +1,7 @@
 # 03: Backing services come up healthy under Compose; `down` stops them
 
+> **Superseded in part (agent clones):** a set's repos are no longer `git worktree`s of the source. Each is the agent's own `git clone --shared` in the set directory; the source's `.git` is mounted read-only in the agent; sandbox syncs `agent/<set>` into the source on `up`, `SET status`, `down` and `destroy`. See the revision note in `spec.md` and "The agent's clones" in the README.
+
 **What to build:** A set whose repo declares a backing service in `.sandbox/compose.yaml` gets that service started as Compose project `sandbox-<set>`, reachable by its short alias on the set's network, and `up` blocks until healthchecks pass. `sandbox SET down` stops containers and removes the network and volumes while keeping worktrees. Single repo only; no deduplication, IPs or hosts yet (stories 33, 37, 44, 54, 97, 100).
 
 **Blocked by:** 01 (walking skeleton)

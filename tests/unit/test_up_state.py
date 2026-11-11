@@ -2,7 +2,7 @@
 
 State table: no set → provision; plan but nothing running → resume; running → no-op;
 running with ``--recreate`` → restart. A failed or cancelled `up` takes the set's own
-containers, network and volumes down again but keeps the plan and worktrees.
+containers, network and volumes down again but keeps the plan and clones.
 """
 
 import asyncio
@@ -37,9 +37,11 @@ class CountingGit(FakeGit):
         super().__init__()
         self.adds = 0
 
-    async def add_worktree(self, repo: Path, path: Path, branch: str, *, base: str | None) -> None:
+    async def clone_for_agent(
+        self, repo: Path, path: Path, branch: str, *, base: str | None
+    ) -> None:
         self.adds += 1
-        await super().add_worktree(repo, path, branch, base=base)
+        await super().clone_for_agent(repo, path, branch, base=base)
 
 
 def ups(compose: FakeCompose) -> int:
@@ -75,7 +77,7 @@ def test_running_set_is_a_no_op_that_prints_its_services(env: Env) -> None:
     assert ("down", PROJECT) not in compose.calls
 
 
-def test_plan_with_nothing_running_resumes_without_creating_worktrees(env: Env) -> None:
+def test_plan_with_nothing_running_resumes_without_creating_clones(env: Env) -> None:
     git, compose = CountingGit(), FakeCompose()
     make_repo(env, git)
     assert invoke(UP, git, compose).exit_code == 0
@@ -183,7 +185,7 @@ def test_registered_provision_step_runs_after_services_are_up(
 # --- rollback ---------------------------------------------------------------------------
 
 
-def test_failed_up_rolls_back_services_but_keeps_plan_and_worktrees(env: Env) -> None:
+def test_failed_up_rolls_back_services_but_keeps_plan_and_clones(env: Env) -> None:
     git = FakeGit()
     compose = FakeCompose(up_error="container sandbox-jira-123-mysql-1 is unhealthy")
     make_repo(env, git)
@@ -196,7 +198,7 @@ def test_failed_up_rolls_back_services_but_keeps_plan_and_worktrees(env: Env) ->
     assert compose.calls == [("up", PROJECT), ("down", PROJECT)]
     set_dir = env.set_dir("jira-123")
     assert (set_dir / "sandbox.yaml").is_file()
-    assert (set_dir / "api" / ".git").is_file()
+    assert (set_dir / "api" / ".git").is_dir()
 
     # Rerunning `up` resumes from what was kept.
     compose.up_error = None
@@ -278,9 +280,11 @@ class FailFastGit(FakeGit):
         self.finished: list[str] = []
         self.cancelled: list[str] = []
 
-    async def add_worktree(self, repo: Path, path: Path, branch: str, *, base: str | None) -> None:
+    async def clone_for_agent(
+        self, repo: Path, path: Path, branch: str, *, base: str | None
+    ) -> None:
         if repo.name == "api":
-            raise ComposeError("api: git worktree add failed")
+            raise ComposeError("api: git clone failed")
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
@@ -297,7 +301,7 @@ def test_steps_fail_fast_cancelling_sibling_work(env: Env) -> None:
     result = invoke(["jira-123", "up", "--repos", "api", "web"], git, compose)
 
     assert result.exit_code == 1
-    assert "api: git worktree add failed" in result.stderr
+    assert "api: git clone failed" in result.stderr
     assert git.cancelled == ["web"]
     assert git.finished == []
     assert ("up", PROJECT) not in compose.calls
@@ -344,7 +348,7 @@ def test_cancelling_up_rolls_back_the_sets_services(env: Env) -> None:
 
     assert compose.running == {}
     assert compose.calls[-1] == ("down", PROJECT)
-    assert (env.set_dir("jira-123") / "api" / ".git").is_file()
+    assert (env.set_dir("jira-123") / "api" / ".git").is_dir()
 
 
 def test_rollback_is_shielded_from_repeated_cancellation(env: Env) -> None:

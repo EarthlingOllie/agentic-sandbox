@@ -1,7 +1,7 @@
 """The plan schema shared by set plans (``<set>/sandbox.yaml``) and templates.
 
 A set plan pins everything needed to recreate the set: each repo's absolute ``source`` and
-the ``base`` branch its worktree was cut from. Templates share the schema but leave ``base``
+the ``base`` branch the agent's clone was cut from. Templates share the schema but leave ``base``
 optional so they stay reusable. The set's name is its directory name and is never stored in
 the plan (unknown keys such as ``name`` are rejected).
 """
@@ -43,7 +43,7 @@ class SetRepo(RepoSpec):
 
 
 class Plan[R: RepoSpec](BaseModel):
-    """Repos keyed by name (the worktree directory name), plus an optional agent override."""
+    """Repos keyed by name (the clone's directory in the set), plus an optional agent override."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

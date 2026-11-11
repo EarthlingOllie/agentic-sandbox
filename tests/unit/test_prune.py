@@ -1,5 +1,5 @@
 """`sandbox SET prune` and bare `sandbox prune`: clear container infrastructure, hosts
-blocks and IP leases; never worktrees (fake Compose and Docker)."""
+blocks and IP leases; never the agent's clones (fake Compose and Docker)."""
 
 import asyncio
 import json
@@ -76,11 +76,11 @@ class SlowCompose(FakeCompose):
 # --- sandbox SET prune ---------------------------------------------------------------------
 
 
-def test_prune_clears_a_stopped_sets_infrastructure_and_keeps_worktrees_and_plan(
+def test_prune_clears_a_stopped_sets_infrastructure_and_keeps_clones_and_plan(
     env: Env,
 ) -> None:
     git, docker = FakeGit(), FakeDocker()
-    api = make_repo(env, git)
+    make_repo(env, git)
     env.hosts_file.write_text("127.0.0.1\tlocalhost\n")
     up("jira-123", git, docker)
     assert run(["jira-123", "down"], git, docker)[0] == 0
@@ -100,10 +100,10 @@ def test_prune_clears_a_stopped_sets_infrastructure_and_keeps_worktrees_and_plan
     assert env.hosts_file.read_text() == "127.0.0.1\tlocalhost\n"
     set_dir = env.set_dir("jira-123")
     assert (set_dir / "sandbox.yaml").is_file()
-    assert (set_dir / "api" / ".git").is_file()
-    assert git.repo(api).checked_out["agent/jira-123"] == set_dir / "api"
+    assert (set_dir / "api" / ".git").is_dir()
+    assert git.clone(set_dir / "api").branch == "agent/jira-123"
     assert "jira-123" in out
-    assert "worktrees kept" in out
+    assert "clones kept" in out
 
 
 def test_prune_refuses_a_running_set(env: Env) -> None:
@@ -252,7 +252,7 @@ def test_one_failing_orphan_does_not_stop_the_rest(env: Env) -> None:
     assert set(leased_blocks(env)) == {"orphan-2"}
 
 
-def test_bare_prune_never_touches_worktrees_of_a_planless_set_dir(env: Env) -> None:
+def test_bare_prune_never_touches_clones_of_a_planless_set_dir(env: Env) -> None:
     git, docker = FakeGit(), FakeDocker()
     make_repo(env, git)
     up("half", git, docker)
@@ -263,5 +263,5 @@ def test_bare_prune_never_touches_worktrees_of_a_planless_set_dir(env: Env) -> N
 
     assert code == 0, out + err
     assert "half" in out
-    assert (env.set_dir("half") / "api" / ".git").is_file()
+    assert (env.set_dir("half") / "api" / ".git").is_dir()
     assert "half" not in leased_blocks(env)

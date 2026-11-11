@@ -14,7 +14,7 @@
 
 A step is a name, an async ``run(ctx)`` and an optional async ``rollback(ctx)``. Rollback
 undoes the set's own infrastructure only (containers, network, volumes, host entries); plan
-and worktrees are kept so rerunning ``up`` resumes. Steps that fan out (one task per repo)
+and the agent's clones are kept so rerunning ``up`` resumes. Steps that fan out (one task per repo)
 use :func:`fail_fast`, a ``TaskGroup`` that cancels sibling work on the first failure.
 """
 
@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.certs import Mkcert, SetCertificate, SubprocessMkcert
+from sandbox.clones import CloneManager, CloneResult
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.services import RepoCompose
@@ -40,7 +41,6 @@ from sandbox.leases import SetLease
 from sandbox.plan import SetPlan
 from sandbox.platforms import Host
 from sandbox.state import SetState, UpAction
-from sandbox.worktrees import WorktreeManager, WorktreeResult
 
 if TYPE_CHECKING:
     from sandbox.hosts import HostsWriter
@@ -56,7 +56,7 @@ class UpContext:
     git: Git
     compose: Compose
     warn: Warn
-    worktree_manager: WorktreeManager
+    clone_manager: CloneManager
     set_name: str
     set_dir: Path
     plan_file: Path
@@ -89,7 +89,7 @@ class UpContext:
     root_ca: Path | None = None
     # Filled in by provision steps.
     plan_created: bool = False
-    worktrees: list[WorktreeResult] = field(default_factory=list[WorktreeResult])
+    clones: list[CloneResult] = field(default_factory=list[CloneResult])
     certificate: SetCertificate | None = None
 
 
@@ -179,7 +179,7 @@ def _rollback_report(ctx: UpContext, problems: list[str]) -> str:
             + f"\nclean up with: sandbox {ctx.set_name} down"
         )
     return (
-        f"rolled back set {ctx.set_name!r}: its services were removed; plan and worktrees "
+        f"rolled back set {ctx.set_name!r}: its services were removed; plan and clones "
         f"were kept, so `sandbox {ctx.set_name} up` resumes"
     )
 

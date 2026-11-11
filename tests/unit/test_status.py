@@ -6,6 +6,7 @@ from typing import Any
 
 from sandbox.compose import project_name
 from sandbox.docker import Container
+from sandbox.git import SyncOutcome, SyncResult
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
 from tests.fakes_compose import FakeCompose
@@ -150,8 +151,8 @@ def test_set_status_marks_repos_with_uncommitted_or_untracked_work(env: Env) -> 
     for name in ("api", "web", "worker"):
         make_repo(env, git, name)
     up("jira-123", git, docker, "api", "web", "worker")
-    git.worktree(env.set_dir("jira-123") / "api").modified = True
-    git.worktree(env.set_dir("jira-123") / "web").untracked = True
+    git.clone(env.set_dir("jira-123") / "api").modified = True
+    git.clone(env.set_dir("jira-123") / "web").untracked = True
 
     detail = status_json(git, docker, "jira-123")
 
@@ -163,6 +164,8 @@ def test_set_status_marks_repos_with_uncommitted_or_untracked_work(env: Env) -> 
             "branch": "agent/jira-123",
             "modified": True,
             "untracked": False,
+            "sync": "unchanged",
+            "sync_detail": "",
         },
         {
             "name": "web",
@@ -171,6 +174,8 @@ def test_set_status_marks_repos_with_uncommitted_or_untracked_work(env: Env) -> 
             "branch": "agent/jira-123",
             "modified": False,
             "untracked": True,
+            "sync": "unchanged",
+            "sync_detail": "",
         },
         {
             "name": "worker",
@@ -179,6 +184,8 @@ def test_set_status_marks_repos_with_uncommitted_or_untracked_work(env: Env) -> 
             "branch": "agent/jira-123",
             "modified": False,
             "untracked": False,
+            "sync": "unchanged",
+            "sync_detail": "",
         },
     ]
     rows = [
@@ -204,19 +211,57 @@ def test_set_status_of_a_stopped_set_still_shows_its_sticky_ips(env: Env) -> Non
     assert services["mysql"]["ip"] == "127.42.0.1"
 
 
-def test_a_missing_worktree_is_reported(env: Env) -> None:
+def test_a_missing_clone_is_reported(env: Env) -> None:
     git, docker = FakeGit(), FakeDocker()
     make_repo(env, git, "api")
     up("jira-123", git, docker, "api")
-    worktree = env.set_dir("jira-123") / "api"
-    (worktree / ".git").unlink()
-    worktree.rmdir()
+    clone = env.set_dir("jira-123") / "api"
+    (clone / ".git").rmdir()
+    clone.rmdir()
 
     detail = status_json(git, docker, "jira-123")
 
     assert detail["repos"][0]["exists"] is False
+    assert detail["repos"][0]["sync"] == "no-clone"
     rows = invoke(["jira-123", "status"], git, docker.compose, docker).stdout
-    assert "worktree missing" in rows
+    assert "clone missing" in rows
+
+
+def test_set_status_brings_the_agents_commits_into_the_repo(env: Env) -> None:
+    git, docker = FakeGit(), FakeDocker()
+    api = make_repo(env, git, "api")
+    up("jira-123", git, docker, "api")
+    git.clone(env.set_dir("jira-123") / "api").commits.append("agent work")
+
+    detail = status_json(git, docker, "jira-123")
+
+    assert detail["repos"][0]["sync"] == "updated"
+    assert git.repo(api).commits["agent/jira-123"] == ["agent work"]
+
+
+def test_set_status_names_a_repo_whose_agent_branch_could_not_be_synced(env: Env) -> None:
+    git, docker = FakeGit(), FakeDocker()
+    make_repo(env, git, "api")
+    up("jira-123", git, docker, "api")
+    git.clone(env.set_dir("jira-123") / "api").sync_result = SyncResult(
+        SyncOutcome.DIVERGED, "agent/jira-123 has commits the agent's branch doesn't"
+    )
+
+    table = invoke(["jira-123", "status"], git, docker.compose, docker).stdout
+
+    assert "api: agent branch not synced into api's repo (diverged)" in table
+    assert "has commits the agent's branch doesn't" in table
+
+
+def test_listing_every_set_syncs_nothing(env: Env) -> None:
+    git, docker = FakeGit(), FakeDocker()
+    make_repo(env, git, "api")
+    up("jira-123", git, docker, "api")
+    git.syncs.clear()
+
+    assert invoke(["status"], git, docker.compose, docker).exit_code == 0
+
+    assert git.syncs == []
 
 
 def test_set_status_of_an_unknown_set_fails(env: Env) -> None:

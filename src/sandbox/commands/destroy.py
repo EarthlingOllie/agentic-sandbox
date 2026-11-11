@@ -1,4 +1,4 @@
-"""``sandbox SET destroy``: prune a set, then remove its worktrees and set directory."""
+"""``sandbox SET destroy``: sync and prune a set, then remove its clones and set directory."""
 
 import asyncio
 from typing import Annotated
@@ -17,8 +17,9 @@ def destroy(
         bool,
         typer.Option(
             "--force",
-            help="Discard uncommitted and untracked changes in the worktrees; with "
-            "--branches, also delete branches holding unpushed commits.",
+            help="Discard uncommitted and untracked changes in the agent's clones and agent "
+            "commits that couldn't be synced; with --branches, also delete branches holding "
+            "unpushed commits.",
         ),
     ] = False,
     branches: Annotated[
@@ -29,9 +30,10 @@ def destroy(
         ),
     ] = False,
 ) -> None:
-    """Remove a stopped set for good: prune it, then remove its worktrees (via git) and
-    its set directory (plan, certificate). Refuses on a running set, and on uncommitted or
-    untracked work unless --force. The agent/SET branches are kept unless --branches.
+    """Remove a stopped set for good: sync agent/SET into each repo, prune the set, then
+    remove the agent's clones and the set directory (plan, certificate). Refuses on a
+    running set, and on agent commits that couldn't be synced or uncommitted or untracked
+    work unless --force. The agent/SET branches are kept unless --branches.
     """
     set_name = current_set(ctx, "destroy")
     try:
@@ -41,8 +43,8 @@ def destroy(
     except SandboxError as exc:
         failure(exc)
     typer.echo(f"set {result.set_name}: destroyed {result.set_dir}")
-    for path in result.worktrees:
-        typer.echo(f"  removed worktree {path}")
+    for path in result.clones:
+        typer.echo(f"  removed clone {path}")
     for path in result.root_cleaned:
         typer.echo(f"  deleted root-owned files in {path} from a throwaway container")
     for source in result.deleted_branches:

@@ -1,5 +1,7 @@
 # 12: Web apps served on HTTPS at `https://<repo>.<set>.test`
 
+> **Superseded in part (agent clones):** a set's repos are no longer `git worktree`s of the source. Each is the agent's own `git clone --shared` in the set directory; the source's `.git` is mounted read-only in the agent; sandbox syncs `agent/<set>` into the source on `up`, `SET status`, `down` and `destroy`. See the revision note in `spec.md` and "The agent's clones" in the README.
+
 **What to build:** A repo marks its web service with `x-sandbox: { web: true }` and it is served on port 443 at `https://<repo>.<set>.test`, with a certificate trusted on the host and inside every container, so cookies, CORS and OAuth callbacks behave like the committed config (stories 62, 63, 66–68, 70–72; spec: repo opt-in contract).
 
 **Blocked by:** 06 (hosts file block), 09 (agent container and `sh`)

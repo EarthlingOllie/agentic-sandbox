@@ -1,4 +1,5 @@
-"""``sandbox SET down``: stop the set's services; keep worktrees, plan and set directory."""
+"""``sandbox SET down``: stop the set's services and sync agent/SET into the repos; keep
+the clones, plan and set directory."""
 
 import asyncio
 
@@ -11,7 +12,8 @@ from sandbox.provisioner import Provisioner
 
 
 def down(ctx: typer.Context) -> None:
-    """Stop the set's containers and remove its network and volumes (worktrees are kept)."""
+    """Stop the set's containers and remove its network and volumes, then bring the agent's
+    commits into each repo's agent/SET branch (the agent's clones are kept)."""
     set_name = current_set(ctx, "down")
     try:
         deps = get_deps(ctx)
@@ -19,6 +21,6 @@ def down(ctx: typer.Context) -> None:
         result = asyncio.run(provisioner.down(set_name))
     except SandboxError as exc:
         failure(exc)
-    typer.echo(
-        f"set {result.set_name}: {result.project} stopped; worktrees kept in {result.set_dir}"
-    )
+    for note in result.sync_notes:
+        warn(note)
+    typer.echo(f"set {result.set_name}: {result.project} stopped; clones kept in {result.set_dir}")

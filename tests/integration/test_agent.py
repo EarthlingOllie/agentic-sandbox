@@ -1,4 +1,4 @@
-"""The agent container against real Docker: hardened, mounts, host UID, `git` in a worktree.
+"""The agent container against real Docker: hardened, mounts, host UID, `git` in its clone.
 
 The first run builds the default agent image (Compose builds it on `up`), which pulls
 `ubuntu:24.04` and installs `claude` from npm.
@@ -93,19 +93,21 @@ def test_host_claude_dir_is_shared(env: Env, api: Path) -> None:
 @pytest.mark.skipif(
     RUNNING_AS_ROOT, reason="the agent never runs as root, so it can't write root's files"
 )
-def test_git_works_in_the_worktree_and_files_stay_the_developers(env: Env, api: Path) -> None:
-    worktree = f"/workspace/{SET}/api"
-    assert in_agent("git branch --show-current", workdir=worktree) == f"agent/{SET}"
+def test_git_works_in_the_clone_and_files_stay_the_developers(env: Env, api: Path) -> None:
+    clone = f"/workspace/{SET}/api"
+    assert in_agent("git branch --show-current", workdir=clone) == f"agent/{SET}"
     in_agent(
         "echo change > made-by-agent.txt && git add made-by-agent.txt"
         " && git -c user.name=agent -c user.email=agent@example.invalid"
         " commit --quiet -m 'from the agent'",
-        workdir=worktree,
+        workdir=clone,
     )
     in_agent("echo hi > /home/agent/.claude/written-by-agent")
 
     on_host = env.set_dir(SET) / "api" / "made-by-agent.txt"
     for path in (on_host, Path.home() / ".claude" / "written-by-agent"):
         assert (path.stat().st_uid, path.stat().st_gid) == (os.getuid(), os.getgid())
-    # The commit landed in the source repo's shared object store on the host.
+    # Synced into the source repo (by `status` here) as the agent's branch.
+    synced = invoke([SET, "status"], SubprocessGit(), SubprocessCompose())
+    assert synced.exit_code == 0, synced.output
     assert git(api, "log", "-1", "--format=%s", f"agent/{SET}") == "from the agent"
