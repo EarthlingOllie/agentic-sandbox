@@ -1,6 +1,7 @@
 """Service dedup against real `docker compose config`, and one multi-repo `up` via the CLI."""
 
 import asyncio
+import hashlib
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -14,7 +15,7 @@ from sandbox.compose.dedup import ServiceConflictError, resolve
 from sandbox.compose.services import RepoCompose, load_repo_compose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git, unique_set
+from tests.integration.conftest import RUN_ID, git, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -24,6 +25,8 @@ if shutil.which("docker") is None:
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 SET = unique_set("dedup")
 PROJECT = project_name(SET)
+# A pool of this run's own, so published ports can't meet another run's on the host.
+POOL = f"127.{64 + int(hashlib.sha256(RUN_ID.encode()).hexdigest(), 16) % 128}.0.0/16"
 
 
 def docker(*args: str) -> str:
@@ -33,6 +36,9 @@ def docker(*args: str) -> str:
 
 
 def fixture_repo(env: Env, fixture: str, name: str) -> Path:
+    if "ip_pool" not in env.config_file.read_text():
+        with env.config_file.open("a") as config:
+            config.write(f"ip_pool: {POOL}\n")
     path = env.cwd / name
     shutil.copytree(FIXTURES / fixture, path)
     git(path, "init", "--quiet", "--initial-branch=main")

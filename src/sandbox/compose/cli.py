@@ -43,6 +43,13 @@ class Compose(Protocol):
         (stdin, stdout and stderr are inherited) and return its exit status."""
         ...
 
+    async def exec_captured(
+        self, project: str, service: str, command: list[str]
+    ) -> tuple[int, str]:
+        """Run ``command`` in the project's running ``service`` without a terminal and
+        return its exit status and its output (stdout and stderr interleaved)."""
+        ...
+
 
 class SubprocessCompose:
     """Runs the real ``docker compose`` CLI."""
@@ -109,3 +116,25 @@ class SubprocessCompose:
         except FileNotFoundError as exc:
             raise ComposeError("docker is not installed or not on PATH") from exc
         return await process.wait()
+
+    async def exec_captured(
+        self, project: str, service: str, command: list[str]
+    ) -> tuple[int, str]:
+        argv = ["docker", "compose", "-p", project, "exec", "-T", service, *command]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except FileNotFoundError as exc:
+            raise ComposeError("docker is not installed or not on PATH") from exc
+        try:
+            output, _ = await process.communicate()
+        except asyncio.CancelledError:
+            if process.returncode is None:
+                process.kill()
+                await asyncio.shield(process.wait())
+            raise
+        return await process.wait(), output.decode(errors="replace")

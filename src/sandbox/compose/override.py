@@ -11,13 +11,15 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from sandbox.compose import project_name
 from sandbox.compose.agent import agent_fragment
-from sandbox.compose.dedup import ServiceGraph, relocation_fragment
+from sandbox.compose.dedup import Override, ServiceGraph, relocation_fragment
+from sandbox.compose.hooks import hooks_fragment
 from sandbox.compose.network import network_fragment
 from sandbox.compose.services import RepoCompose, set_labels_fragment
+from sandbox.hooks import find_hooks
 from sandbox.yamlio import dump_yaml
 
 OVERRIDE_FILENAME: Final = "override.yaml"
@@ -62,12 +64,17 @@ def _network(ctx: OverrideContext) -> dict[str, Any]:
     return network_fragment(ctx.set_name, definitions, ctx.ips)
 
 
+def _init_hooks(ctx: OverrideContext) -> dict[str, Any]:
+    return hooks_fragment(find_hooks(ctx.sources, ctx.graph.names()))
+
+
 FRAGMENTS: Final[list[Fragment]] = [
     _project,
     _set_labels,
     _relocate,
     _agent,
     _network,
+    _init_hooks,
 ]
 
 
@@ -92,5 +99,8 @@ def _merge(into: dict[str, Any], other: dict[str, Any]) -> None:
         current = into.get(key)
         if isinstance(current, dict) and isinstance(value, dict):
             _merge(current, value)  # pyright: ignore[reportUnknownArgumentType]
+        elif isinstance(current, Override) and isinstance(current.value, list):
+            # A restated (``!override``) list keeps its entries; later fragments add to it.
+            into[key] = Override([*current.value, *cast(list[Any], value)])
         else:
             into[key] = value

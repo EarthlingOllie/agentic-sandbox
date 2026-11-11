@@ -116,6 +116,7 @@ class _NoUp:
         self.config = compose.config
         self.down = compose.down
         self.exec = compose.exec
+        self.exec_captured = compose.exec_captured
 
     async def up(self, project: str, files: list[Path]) -> None:
         del project, files

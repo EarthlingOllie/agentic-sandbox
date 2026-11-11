@@ -42,7 +42,8 @@ Services are matched **by name only** (never by image): if `api` and `web` both 
 normalised on its own with `docker compose config` (so `extends`, short/long syntax and
 list/map `environment` don't cause false conflicts) and same-named services are compared:
 
-- `depends_on`, `labels`, `ports` and `x-sandbox` are ignored (sandbox rewrites ports);
+- `depends_on`, `labels`, `ports` and `x-sandbox` are ignored (sandbox rewrites ports), as are
+  init-hook mounts under `/sandbox/init/` (see below);
 - a `healthcheck` set by only one repo is kept; two different healthchecks conflict;
 - any other difference fails `up`, before any container starts, with a diff naming both repos:
 
@@ -68,6 +69,25 @@ Compose's `!override`/`!reset` merge tags (Docker Compose 2.24 or newer). One li
 remains: `extends: {file: ...}` is resolved while Compose loads the files, so only the
 first repo (by name) of a multi-repo set may use it; later repos should extend services
 defined in the same file.
+
+### Init hooks
+
+A repo can ship `.sandbox/init/<service>.sh` to create its own database, users or seed data
+in a (possibly shared) service. Sandbox mounts the repo's `.sandbox/init/` read-only at
+`/sandbox/init/<repo>/` in that service and, once `compose up --wait` reports the set
+healthy, runs `sh /sandbox/init/<repo>/<service>.sh` with `docker compose exec`, in
+repo-name order. Hooks run on every `up` that starts the set (first `up`, resume,
+`--recreate`), so write them to be idempotent:
+
+```sh
+# api/.sandbox/init/mysql.sh
+mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS api"
+```
+
+A hook for a service the set does not run fails `up` before any container starts. A hook
+that exits non-zero fails the set and rolls it back (plan and worktrees are kept); the
+error shows the hook's output. Hooks are read from the repo's source checkout, like its
+compose file.
 
 ### The agent container
 

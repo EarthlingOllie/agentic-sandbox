@@ -5,7 +5,8 @@ Each repo's compose file is normalised on its own with ``docker compose config``
 matched **by name only**. Same-named definitions must be identical after normalisation,
 except that:
 
-- ``depends_on``, ``labels``, ``ports`` and ``x-sandbox`` are ignored (sandbox rewrites ports);
+- ``depends_on``, ``labels``, ``ports`` and ``x-sandbox`` are ignored (sandbox rewrites ports),
+  as are init-hook mounts under ``/sandbox/init/`` (one per repo by design);
 - a ``healthcheck`` set by only one repo is kept; two different healthchecks conflict.
 
 Any other difference fails ``up`` before a container starts, with a diff naming both repos.
@@ -31,6 +32,8 @@ from sandbox.errors import SandboxError
 
 IGNORED_KEYS: Final = frozenset({"depends_on", "labels", "ports", "x-sandbox"})
 HEALTHCHECK: Final = "healthcheck"
+# Where sandbox mounts init hooks (see sandbox.hooks); such mounts never conflict.
+INIT_MOUNT_ROOT: Final = "/sandbox/init/"
 
 
 class ServiceConflictError(SandboxError):
@@ -176,7 +179,16 @@ def _difference(
 
 
 def _comparable(spec: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in spec.items() if key not in IGNORED_KEYS}
+    comparable = {key: value for key, value in spec.items() if key not in IGNORED_KEYS}
+    if isinstance(volumes := comparable.get("volumes"), list):
+        comparable["volumes"] = [v for v in cast(list[Any], volumes) if not _init_mount(v)]
+    return comparable
+
+
+def _init_mount(volume: object) -> bool:
+    """An init-hook mount (``/sandbox/init/<repo>``): per repo by design, never a conflict."""
+    target = volume.get("target") if isinstance(volume, dict) else None  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+    return isinstance(target, str) and target.startswith(INIT_MOUNT_ROOT)
 
 
 def _dump(spec: Mapping[str, Any]) -> list[str]:

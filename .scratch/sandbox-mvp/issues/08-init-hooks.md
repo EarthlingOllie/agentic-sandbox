@@ -4,11 +4,11 @@
 
 **Blocked by:** 04 (rollback and state table), 07 (service deduplication)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Each hook is mounted read-only at `/sandbox/init/<repo>/` in the target service and executed with `docker compose exec` after the service is healthy
-- [ ] With two repos hooking the same service, hooks run in repo-name order
-- [ ] Hooks run on every `up`, including a resume
-- [ ] A non-zero hook exit fails the set and triggers rollback, with the hook's output surfaced
-- [ ] Init-hook volumes never count as a dedup conflict
-- [ ] Fixture repo's init hook creates a database, verified in an integration test
+- [x] Each hook is mounted read-only at `/sandbox/init/<repo>/` in the target service and executed with `docker compose exec` after the service is healthy
+- [x] With two repos hooking the same service, hooks run in repo-name order
+- [x] Hooks run on every `up`, including a resume
+- [x] A non-zero hook exit fails the set and triggers rollback, with the hook's output surfaced
+- [x] Init-hook volumes never count as a dedup conflict
+- [x] Fixture repo's init hook creates a database, verified in an integration test

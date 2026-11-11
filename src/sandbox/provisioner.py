@@ -4,12 +4,14 @@
 
 - ``VALIDATION_STEPS`` check every repo, its ``.sandbox/`` and compose file, deduplicate
   same-named services across repos (``sandbox.compose.dedup``), check the agent override
-  and its image (``sandbox.agent_override``), then observe the set's state.
+  and its image (``sandbox.agent_override``), check init hooks target the set's services
+  (``sandbox.hooks``), then observe the set's state.
   Nothing is created until all of them pass.
 - The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
 - ``PROVISION_STEPS`` write the plan, ensure worktrees and bring services up healthy as
-  Compose project ``sandbox-<set>``, then write the set's hosts block (``sandbox.hosts``);
-  on failure or Ctrl-C, started steps roll back.
+  Compose project ``sandbox-<set>``, run the repos' init hooks in them (``sandbox.hooks``),
+  then write the set's hosts block (``sandbox.hosts``); on failure or Ctrl-C, started steps
+  roll back.
 
 A later concern adds its step in its own module and one line to one of the two lists.
 ``down`` stops the project, removes the hosts block and leaves worktrees alone.
@@ -31,6 +33,7 @@ from sandbox.compose.services import SANDBOX_DIRNAME, RepoCompose, load_repo_com
 from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.git import Git
+from sandbox.hooks import check_hooks, run_hooks
 from sandbox.hosts import HostsWriter, hosts_writer, remove_hosts_block, write_hosts_block
 from sandbox.names import agent_branch, validate_repo_name, validate_set_name
 from sandbox.pipeline import Step, UpContext, Warn, fail_fast, provision, validate
@@ -195,6 +198,7 @@ VALIDATION_STEPS: Final[list[Step]] = [
     Step("dedup", _dedup_services),
     Step("agent-override", check_agent_override),
     Step("ip-leases", lease_ips),
+    Step("init-hooks", check_hooks),
     # Register further checks (hostname clashes, prerequisites) above this line.
     Step("observe-state", _observe_state),
 ]
@@ -204,6 +208,7 @@ PROVISION_STEPS: Final[list[Step]] = [
     Step("worktrees", _ensure_worktrees),
     Step("stop-for-recreate", _stop_for_recreate),
     Step("compose-up", _compose_up, rollback=_compose_down),
+    Step("init-hooks", run_hooks),
     Step("hosts-block", write_hosts_block, rollback=remove_hosts_block),
     # Register post-up steps (hosts block, init hooks) below this line.
 ]

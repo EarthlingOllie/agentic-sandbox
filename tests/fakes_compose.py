@@ -56,6 +56,13 @@ class FakeCompose:
         default_factory=list[tuple[str, str, list[str], str | None]]
     )
     exec_status: int = 0
+    # (project, service, command) for each `exec_captured`, in call order.
+    captured: list[tuple[str, str, list[str]]] = field(
+        default_factory=list[tuple[str, str, list[str]]]
+    )
+    # The command's last argument -> the (status, output) `exec_captured` returns for it;
+    # anything else succeeds with no output.
+    captured_results: dict[str, tuple[int, str]] = field(default_factory=dict[str, tuple[int, str]])
 
     async def up(self, project: str, files: list[Path]) -> None:
         self.calls.append(("up", project))
@@ -101,3 +108,11 @@ class FakeCompose:
     ) -> int:
         self.execs.append((project, service, list(command), workdir))
         return self.exec_status
+
+    async def exec_captured(
+        self, project: str, service: str, command: list[str]
+    ) -> tuple[int, str]:
+        if project not in self.running:
+            raise ComposeError(f"service {service!r} is not running")
+        self.captured.append((project, service, list(command)))
+        return self.captured_results.get(command[-1], (0, ""))
