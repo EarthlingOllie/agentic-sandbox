@@ -26,6 +26,7 @@ from sandbox.commands.setup import setup
 from sandbox.commands.sh import sh
 from sandbox.commands.status import status
 from sandbox.commands.templates import templates
+from sandbox.commands.urls import urls
 from sandbox.config import load_config
 from sandbox.context import (
     SET_META_KEY,
@@ -192,6 +193,7 @@ app.command()(status)
 app.command()(prune)
 app.command()(destroy)
 app.command()(setup)
+app.command()(urls)
 
 
 def main() -> None:

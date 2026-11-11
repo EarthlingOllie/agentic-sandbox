@@ -4,8 +4,8 @@
 
 **Blocked by:** 12 (HTTPS web apps), 14 (status)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Web apps listed as `https://<host>.<set>.test` with IP; backing services as `<service>.<set>.test:<port>` with IP
-- [ ] `--json` prints the same Pydantic model as the table
-- [ ] Works on a stopped set from its sticky leases, marking it as not running
+- [x] Web apps listed as `https://<host>.<set>.test` with IP; backing services as `<service>.<set>.test:<port>` with IP
+- [x] `--json` prints the same Pydantic model as the table
+- [x] Works on a stopped set from its sticky leases, marking it as not running

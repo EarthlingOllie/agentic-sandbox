@@ -261,6 +261,28 @@ api   agent/jira-123  * uncommitted changes
 web   agent/jira-123  clean
 ```
 
+## URLs
+
+`sandbox SET urls` lists every address in a set you can reach from the host: web apps as
+`https://` URLs (extra hosts and a Vite dev server included) and backing services as
+`<service>.<set>.test:<port>`, each with its leased loopback IP. A stopped set lists the
+addresses from its sticky lease, marked as not running. `--json` prints the same Pydantic
+model the table is rendered from.
+
+```console
+$ sandbox jira-123 urls
+set jira-123: running
+
+WEB                                 IP
+https://web.jira-123.test           127.42.0.3
+https://admin.jira-123.test         127.42.0.3
+https://web.jira-123.test:5173      127.42.0.3
+
+SERVICE                             IP
+mysql.jira-123.test:3306            127.42.0.1
+redis.jira-123.test:6379            127.42.0.2
+```
+
 States are reconciled from the set directories, the lease file and the containers Docker
 labels `sandbox.set=<set>` (queried with the `docker` CLI): **running** (every service and
 the agent running), **stopped** (a plan, nothing running), **partial** (some running) and

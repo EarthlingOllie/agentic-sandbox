@@ -15,6 +15,7 @@ import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final, cast
 
 from sandbox.certs import ensure_certificate, root_ca
@@ -41,9 +42,14 @@ class _WebService:
 
 def find_web_apps(ctx: UpContext) -> list[WebApp]:
     """Each repo's web app (repo-name order), or fail with every problem found."""
+    return web_apps(ctx.set_name, ctx.set_dir, ctx.repo_composes)
+
+
+def web_apps(set_name: str, set_dir: Path, repo_composes: Sequence[RepoCompose]) -> list[WebApp]:
+    """Each repo's web app (repo-name order), or fail with every problem found."""
     errors: list[str] = []
     found: list[WebApp] = []
-    for repo in sorted(ctx.repo_composes, key=lambda rc: rc.repo):
+    for repo in sorted(repo_composes, key=lambda rc: rc.repo):
         try:
             service = _web_service(repo)
         except SandboxError as exc:
@@ -54,8 +60,8 @@ def find_web_apps(ctx: UpContext) -> list[WebApp]:
                 WebApp(
                     repo.repo,
                     service.name,
-                    ctx.set_name,
-                    ctx.set_dir / repo.repo,
+                    set_name,
+                    set_dir / repo.repo,
                     hosts=service.hosts,
                     vite=service.vite,
                 )
