@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 (walking skeleton)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `sandbox templates` lists available templates
-- [ ] `sandbox SET save --to TEMPLATE` writes the set's plan as a template
-- [ ] `sandbox save --to TEMPLATE --repos NAME...` builds a template from repos in the current directory, with absolute `source` paths
-- [ ] `base` is optional in a template; when absent, `up --from` pins the repo's current default/checked-out branch into the set plan so the set is reproducible
-- [ ] `sandbox SET up --from TEMPLATE` copies the template into the new set's plan and provisions it using the pinned absolute paths, independent of the current directory
-- [ ] A template repo whose source lacks `.sandbox/` fails before anything is created
-- [ ] `--from` and `--repos` are mutually exclusive; there is no template inheritance
+- [x] `sandbox templates` lists available templates
+- [x] `sandbox SET save --to TEMPLATE` writes the set's plan as a template
+- [x] `sandbox save --to TEMPLATE --repos NAME...` builds a template from repos in the current directory, with absolute `source` paths
+- [x] `base` is optional in a template; when absent, `up --from` pins the repo's current default/checked-out branch into the set plan so the set is reproducible
+- [x] `sandbox SET up --from TEMPLATE` copies the template into the new set's plan and provisions it using the pinned absolute paths, independent of the current directory
+- [x] A template repo whose source lacks `.sandbox/` fails before anything is created
+- [x] `--from` and `--repos` are mutually exclusive; there is no template inheritance

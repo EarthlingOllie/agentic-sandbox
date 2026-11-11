@@ -54,6 +54,28 @@ repos:
   web: { source: /home/me/code/web, base: release/2.4 }
 ```
 
+## Templates
+
+A template is a plan stored as `<templates_root>/<NAME>.yaml`. It shares the set plan's
+schema, except that `base` is optional. There is no template inheritance: each template is
+a complete plan.
+
+```console
+$ sandbox save --to stack --repos api web   # from ./api and ./web; absolute sources, no base
+$ sandbox jira-123 save --to stack-pinned   # an existing set's plan, bases included
+$ sandbox templates                          # list them
+stack
+stack-pinned
+$ sandbox jira-456 up --from stack          # works from any directory
+```
+
+`up --from TEMPLATE` copies the template into the new set's plan. A repo without `base`
+gets the branch checked out in its source at that moment, pinned into the set plan so the
+set stays reproducible. Sources are the template's absolute paths, so the current
+directory does not matter. Every repo is checked (`.sandbox/` present, git repo root)
+before anything is created. `--from` and `--repos` are mutually exclusive, and `save`
+never overwrites an existing template.
+
 ## Development
 
 ```console

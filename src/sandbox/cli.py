@@ -17,6 +17,8 @@ import typer
 from typer.core import TyperGroup
 
 from sandbox.commands.down import down
+from sandbox.commands.save import save
+from sandbox.commands.templates import templates
 from sandbox.config import load_config
 from sandbox.context import (
     SET_META_KEY,
@@ -31,6 +33,7 @@ from sandbox.errors import SandboxError
 from sandbox.names import RESERVED_VERBS, validate_set_name
 from sandbox.platforms import ensure_supported_platform
 from sandbox.provisioner import Provisioner
+from sandbox.templates import TemplateStore
 from sandbox.worktrees import WorktreeOutcome
 
 
@@ -89,9 +92,19 @@ def up(
         list[str] | None,
         typer.Argument(metavar="NAME...", show_default=False),
     ] = None,
+    from_template: Annotated[
+        str | None,
+        typer.Option(
+            "--from",
+            metavar="TEMPLATE",
+            help="Build a new set from a template (see `sandbox templates`).",
+        ),
+    ] = None,
 ) -> None:
     """Create the set (or resume it): a worktree per repo on agent/SET, services healthy."""
     set_name = current_set(ctx, "up")
+    if from_template is not None and (use_repos or names):
+        usage_error("--from and --repos are mutually exclusive")
     if use_repos and not names:
         usage_error("--repos needs at least one repo name: sandbox SET up --repos NAME...")
     if names and not use_repos:
@@ -101,9 +114,16 @@ def up(
     repos = names if use_repos else None
     try:
         config = load_config()
+        template = (
+            TemplateStore(config.templates_root).load(from_template)
+            if from_template is not None
+            else None
+        )
         deps = get_deps(ctx)
         provisioner = Provisioner(config, deps.git, deps.compose, warn)
-        result = asyncio.run(provisioner.up(set_name, repos=repos, cwd=Path.cwd()))
+        result = asyncio.run(
+            provisioner.up(set_name, repos=repos, cwd=Path.cwd(), template=template)
+        )
     except SandboxError as exc:
         failure(exc)
 
@@ -123,6 +143,8 @@ def up(
 
 
 app.command()(down)
+app.command()(save)
+app.command()(templates)
 
 
 def main() -> None:

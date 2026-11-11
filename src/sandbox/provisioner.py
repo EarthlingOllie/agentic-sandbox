@@ -19,7 +19,15 @@ from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.names import agent_branch, validate_repo_name, validate_set_name
-from sandbox.plan import SetPlan, SetRepo, load_set_plan, plan_path, write_new_plan
+from sandbox.plan import (
+    SetPlan,
+    SetRepo,
+    TemplatePlan,
+    TemplateRepo,
+    load_set_plan,
+    plan_path,
+    write_new_plan,
+)
 from sandbox.worktrees import WorktreeManager, WorktreeOutcome, WorktreeResult
 
 Warn = Callable[[str], None]
@@ -55,13 +63,22 @@ class Provisioner:
     def set_dir(self, set_name: str) -> Path:
         return self._config.sets_root / set_name
 
-    async def up(self, set_name: str, *, repos: Sequence[str] | None, cwd: Path) -> UpResult:
+    async def up(
+        self,
+        set_name: str,
+        *,
+        repos: Sequence[str] | None,
+        cwd: Path,
+        template: TemplatePlan | None = None,
+    ) -> UpResult:
         validate_set_name(set_name)
         set_dir = self.set_dir(set_name)
         plan_file = plan_path(set_dir)
         branch = agent_branch(set_name)
 
-        requested = await self._plan_from_directory(cwd, repos) if repos else None
+        if repos and template is not None:
+            raise SandboxError("--from and --repos are mutually exclusive")
+        requested = await self._requested_plan(cwd, repos, template)
         on_disk = load_set_plan(set_dir) if plan_file.exists() else None
         if on_disk is not None and requested is not None:
             _refuse_if_different(set_name, plan_file, requested, on_disk)
@@ -69,7 +86,8 @@ class Provisioner:
         if plan is None:
             raise SandboxError(
                 f"set {set_name!r} has no plan at {plan_file}; "
-                f"create it with: sandbox {set_name} up --repos NAME..."
+                f"create it with: sandbox {set_name} up --repos NAME... "
+                f"or sandbox {set_name} up --from TEMPLATE"
             )
 
         # Everything that can fail cheaply is checked before anything is created.
@@ -113,13 +131,47 @@ class Provisioner:
         await self._compose.down(project)
         return DownResult(set_name, set_dir, project)
 
+    async def _requested_plan(
+        self, cwd: Path, repos: Sequence[str] | None, template: TemplatePlan | None
+    ) -> SetPlan | None:
+        if repos:
+            return await self._plan_from_directory(cwd, repos)
+        if template is not None:
+            return await self._plan_from_template(template)
+        return None
+
+    async def template_from_directory(self, cwd: Path, names: Sequence[str]) -> TemplatePlan:
+        """Resolve ``save --repos`` names against ``cwd``: absolute sources, no ``base``."""
+        sources = await self._sources_from_directory(cwd, names)
+        return TemplatePlan(repos={name: TemplateRepo(source=s) for name, s in sources.items()})
+
     async def _plan_from_directory(self, cwd: Path, names: Sequence[str]) -> SetPlan:
         """Resolve ``--repos`` names against ``cwd``, pinning absolute sources and bases."""
+        sources = await self._sources_from_directory(cwd, names)
+        return await self._pin_bases({name: (source, None) for name, source in sources.items()})
+
+    async def _plan_from_template(self, template: TemplatePlan) -> SetPlan:
+        """Pin a template into a set plan; a repo without ``base`` gets its checked-out branch.
+
+        Sources are the template's absolute paths, so the current directory plays no part.
+        """
+        errors: list[str] = []
+        for name, repo in sorted(template.repos.items()):
+            problem = await self._source_problem(name, repo.source)
+            if problem:
+                errors.append(problem)
+        if errors:
+            raise SandboxError("\n".join(errors))
+        return await self._pin_bases(
+            {name: (repo.source, repo.base) for name, repo in template.repos.items()}
+        )
+
+    async def _sources_from_directory(self, cwd: Path, names: Sequence[str]) -> dict[str, Path]:
         errors: list[str] = []
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
             errors.append(f"repo(s) named more than once: {', '.join(duplicates)}")
-        repos: dict[str, SetRepo] = {}
+        sources: dict[str, Path] = {}
         for name in dict.fromkeys(names):
             try:
                 validate_repo_name(name)
@@ -131,17 +183,27 @@ class Provisioner:
             if problem:
                 errors.append(problem)
                 continue
-            base = await self._git.current_branch(source)
-            if base is None:
+            sources[name] = source
+        if errors:
+            raise SandboxError("\n".join(errors))
+        return sources
+
+    async def _pin_bases(self, repos: dict[str, tuple[Path, str | None]]) -> SetPlan:
+        """Build a set plan, pinning each missing ``base`` to the source's checked-out branch."""
+        errors: list[str] = []
+        pinned: dict[str, SetRepo] = {}
+        for name, (source, base) in repos.items():
+            resolved = base or await self._git.current_branch(source)
+            if resolved is None:
                 errors.append(
                     f"{name}: {source} has a detached HEAD; check out the branch to base "
                     "the worktree on"
                 )
                 continue
-            repos[name] = SetRepo(source=source, base=base)
+            pinned[name] = SetRepo(source=source, base=resolved)
         if errors:
             raise SandboxError("\n".join(errors))
-        return SetPlan(repos=repos)
+        return SetPlan(repos=pinned)
 
     async def _source_problem(self, name: str, source: Path) -> str | None:
         if not source.is_dir():
@@ -219,7 +281,7 @@ def _refuse_if_different(
         f"set {set_name!r} already has a different plan at {plan_file}\n"
         f"  requested: {wanted}\n"
         f"  on disk:   {have}\n"
-        "the plan on disk wins: edit it to change the set, or run `up` without --repos"
+        "the plan on disk wins: edit it to change the set, or run `up` without --repos or --from"
     )
 
 
