@@ -192,11 +192,16 @@ instead; an unknown name fails and points at `--repo`.
   config or hooks, and not a symlink under `refs/`, `logs/` or `objects/` that git on the
   host (sandbox's, or your own) would later write through. Everything in a clone, `.git`
   included, is the agent's, so sandbox's host git treats a clone as an untrusted repository:
-  syncing writes only in your repo (reading the clone through `git upload-pack --strict`,
-  which git documents as safe in an untrusted repository, and refusing a clone whose `.git`
-  is a symlink or file, or whose `commondir` or `alternates` point anywhere else), and
-  `status` reads a clone's `HEAD`, branch and index without following symlinks into a git
-  dir sandbox writes itself, so the clone's config and hooks are never read. Every git
+  syncing writes only in your repo and never runs git on the clone's own `.git`: sandbox
+  copies the clone's `agent/<set>` tip and its own objects (loose objects and packs, read
+  without following any symlink and skipping FIFOs and devices) into a git dir it writes
+  itself, whose only `alternates` is your repo's, and fetches from that through `git
+  upload-pack --strict`. So a clone whose `alternates`, `objects`, `refs`, `packed-refs` or
+  `commondir` point at another repository on the host brings none of its objects into your
+  repo (which the agent could then read), a FIFO in the clone blocks nothing, and a clone
+  whose `.git` is a symlink or file isn't read at all. `status` reads a clone's `HEAD`,
+  branch and index the same way into such a git dir, so the clone's config and hooks are
+  never read. Host git commands also time out rather than hang. Every git
   command sandbox runs on the host also uses isolated config (no system or global config,
   nothing from `GIT_*` variables, and hooks, fsmonitor, editors, pagers and other
   program-running settings pinned off). (So filters such as Git LFS's, configured in your

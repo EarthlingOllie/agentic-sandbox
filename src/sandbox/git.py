@@ -6,13 +6,16 @@ the source repo's objects through ``objects/info/alternates``, and the agent see
 source's ``.git`` only read-only. Everything in the clone (config, hooks, refs, objects,
 symlinks) is the agent's, so host git treats it as an untrusted repository:
 
-* :meth:`SubprocessGit.sync_agent_branch` brings the agent's ``agent/<set>`` into the
-  source repo with ``git fetch`` from the clone. Host git writes only in the source; on the
-  clone's side it runs ``git upload-pack --strict``, which git documents as safe to run in
-  an untrusted repository (it runs no hooks and none of the repository's commands).
-* :meth:`SubprocessGit.clone_status` reads the clone's ``HEAD``, branch and index without
-  following symlinks, into a throwaway git dir sandbox writes itself, and runs ``git
-  status`` there: the clone's config and hooks are never read.
+* Host git never runs on the clone's ``.git``. Sandbox reads what it needs (``HEAD``, the
+  branch, the index, the clone's own loose objects and packs) through directory
+  descriptors without following symlinks and skipping FIFOs and devices, into a throwaway
+  git dir it writes itself, whose only alternates are the source's objects. So nothing
+  the agent points elsewhere (alternates, ``objects``, ``refs``, ``packed-refs``, a
+  ``commondir``) reaches another repository on the host, and nothing it plants blocks.
+* :meth:`SubprocessGit.sync_agent_branch` fetches ``agent/<set>`` into the source from
+  that snapshot through ``git upload-pack --strict``; host git writes only in the source.
+* :meth:`SubprocessGit.clone_status` runs ``git status`` on the snapshot with the clone as
+  the work tree: the clone's config and hooks are never read.
 """
 
 import asyncio
@@ -155,6 +158,8 @@ _BRANCH_REF = re.compile(r"^refs/heads/(?!.*(?:\.\.|//|/\.|@\{|\.lock(?:/|$)))[A
 # More than any HEAD, ref or packed-refs file of a clone sandbox made holds.
 _REF_LIMIT = 64 << 20
 _INDEX_LIMIT = 1 << 34
+# Longer than any git command sandbox runs takes, short of a hang.
+_GIT_TIMEOUT = 600.0
 # The minimal config of the throwaway git dir status runs in.
 _SNAPSHOT_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
 
@@ -179,50 +184,94 @@ def _isolated_environment(env: dict[str, str]) -> dict[str, str]:
 
 
 # --- reading what the agent wrote, never following its symlinks ---------------------------
+#
+# Everything below opens the clone's files relative to directory descriptors, each opened
+# with O_NOFOLLOW, so swapping a directory for a symlink between a check and a read leads
+# nowhere; and it opens files with O_NONBLOCK and reads only regular ones, so a FIFO or
+# device the agent put in place of a file can't block sandbox.
+
+_DIR_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+_LOOSE_DIR = re.compile(r"^[0-9a-f]{2}$")
+_LOOSE_OBJECT = re.compile(r"^(?:[0-9a-f]{38}|[0-9a-f]{62})$")
+_PACK_FILE = re.compile(r"^pack-(?:[0-9a-f]{40}|[0-9a-f]{64})\.(?:pack|idx|rev)$")
 
 
-def _read_beneath(root: Path, relative: str, limit: int = _REF_LIMIT) -> bytes | None:
-    """The content of regular file ``root/relative``, or None. No symlink is followed: not
-    ``root`` itself, not any directory on the way, not the file (nor a FIFO or device)."""
-    flags = os.O_RDONLY | os.O_NOFOLLOW
+def _open_dir_at(directory: int, relative: str) -> int | None:
+    """A descriptor of directory ``relative`` beneath ``directory``, or None; no symlink on
+    the way is followed."""
+    fd = os.dup(directory)
     try:
-        directory = os.open(root, flags | os.O_DIRECTORY)
+        for part in relative.split("/"):
+            inner = os.open(part, _DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = inner
     except OSError:
+        os.close(fd)
+        return None
+    return fd
+
+
+def _open_file_at(directory: int, relative: str) -> int | None:
+    """A descriptor of regular file ``relative`` beneath ``directory``, or None."""
+    *parents, leaf = relative.split("/")
+    parent = _open_dir_at(directory, "/".join(parents)) if parents else os.dup(directory)
+    if parent is None:
         return None
     try:
-        *parents, leaf = relative.split("/")
-        for part in parents:
-            inner = os.open(part, flags | os.O_DIRECTORY, dir_fd=directory)
-            os.close(directory)
-            directory = inner
-        fd = os.open(leaf, flags | os.O_NONBLOCK, dir_fd=directory)
+        fd = os.open(leaf, _FILE_FLAGS, dir_fd=parent)
     except OSError:
         return None
     finally:
-        os.close(directory)
+        os.close(parent)
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None
+    return fd
+
+
+def _read_beneath(directory: int, relative: str, limit: int = _REF_LIMIT) -> bytes | None:
+    """The content of regular file ``relative`` beneath ``directory``, or None (also when it
+    holds more than ``limit`` bytes)."""
+    fd = _open_file_at(directory, relative)
+    if fd is None:
+        return None
+    chunks: list[bytes] = []
+    size = 0
     with os.fdopen(fd, "rb") as file:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
-        chunks: list[bytes] = []
-        size = 0
         while size <= limit and (chunk := file.read(1 << 20)):
             chunks.append(chunk)
             size += len(chunk)
     return b"".join(chunks) if size <= limit else None
 
 
-def _is_plain_dir(path: Path) -> bool:
+def _copy_beneath(directory: int, relative: str, to: Path) -> None:
+    fd = _open_file_at(directory, relative)
+    if fd is None:
+        return
+    to.parent.mkdir(parents=True, exist_ok=True)
+    with os.fdopen(fd, "rb") as source, to.open("wb") as target:
+        shutil.copyfileobj(source, target, 1 << 20)
+
+
+def _names(directory: int) -> list[str]:
+    # By descriptor: a path would follow whatever symlink the agent put there meanwhile.
+    return os.listdir(directory)
+
+
+def _open_clone_git_dir(path: Path) -> int | None:
+    """A descriptor of the clone's ``.git`` directory, or None unless both it and ``path``
+    are real directories (not symlinks, not a ``.git`` file pointing elsewhere). ``path``'s
+    parent is the set directory, which sandbox made and the agent can't replace."""
     try:
-        return stat.S_ISDIR(path.lstat().st_mode)
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     except OSError:
-        return False
-
-
-def _clone_git_dir(path: Path) -> Path | None:
-    """The clone's ``.git`` directory, or None unless both it and ``path`` are real
-    directories (not symlinks, not a ``.git`` file pointing elsewhere)."""
-    git_dir = path / ".git"
-    return git_dir if _is_plain_dir(path) and _is_plain_dir(git_dir) else None
+        return None
+    try:
+        return _open_dir_at(parent, f"{path.name}/.git")
+    finally:
+        os.close(parent)
 
 
 @dataclass(frozen=True)
@@ -231,7 +280,7 @@ class _Head:
     commit: str | None  # None on an unborn branch
 
 
-def _read_head(git_dir: Path) -> _Head | None:
+def _read_head(git_dir: int) -> _Head | None:
     """The clone's HEAD and the commit it names, read without git; None if unreadable."""
     raw = _read_beneath(git_dir, "HEAD", 4096)
     if raw is None:
@@ -245,7 +294,7 @@ def _read_head(git_dir: Path) -> _Head | None:
     return _Head(ref, _read_ref(git_dir, ref))
 
 
-def _read_ref(git_dir: Path, ref: str) -> str | None:
+def _read_ref(git_dir: int, ref: str) -> str | None:
     loose = _read_beneath(git_dir, ref, 4096)
     if loose is not None:
         value = loose.decode("ascii", errors="replace").strip()
@@ -258,14 +307,47 @@ def _read_ref(git_dir: Path, ref: str) -> str | None:
     return None
 
 
-def _snapshot(repo: Path, git_dir: Path, head: _Head, into: Path) -> None:
-    """A git dir of sandbox's own for ``git status`` on the clone: its HEAD, branch and
-    index, sandbox's config, and the clone's and the source's objects (read, never written:
-    status runs with ``--no-optional-locks``)."""
-    (into / "config").write_text(_SNAPSHOT_CONFIG)
+def _copy_objects(git_dir: int, into: Path) -> None:
+    """Copy the clone's own objects, loose and packed, into git dir ``into``. Nothing else
+    under ``objects`` is read: not ``info/alternates``, not ``info/packs``."""
+    objects = _open_dir_at(git_dir, "objects")
+    if objects is None:
+        return
+    try:
+        for name in _names(objects):
+            if _LOOSE_DIR.match(name):
+                pattern = _LOOSE_OBJECT
+            elif name == "pack":
+                pattern = _PACK_FILE
+            else:
+                continue
+            directory = _open_dir_at(objects, name)
+            if directory is None:
+                continue
+            try:
+                for entry in _names(directory):
+                    if pattern.match(entry):
+                        _copy_beneath(directory, entry, into / "objects" / name / entry)
+            finally:
+                os.close(directory)
+    finally:
+        os.close(objects)
+
+
+def _snapshot(repo: Path, git_dir: int, head: _Head, object_format: str, into: Path) -> None:
+    """A git dir of sandbox's own standing in for the clone's: HEAD and its branch as the
+    clone has them, sandbox's config, a copy of the clone's own objects, and the source's
+    objects through alternates sandbox wrote. Host git run on it reads nothing the agent
+    can point elsewhere, swap or block."""
+    config = _SNAPSHOT_CONFIG
+    if object_format != "sha1":
+        config = config.replace("repositoryformatversion = 0", "repositoryformatversion = 1")
+        config += f"[extensions]\n\tobjectFormat = {object_format}\n"
+    (into / "config").write_text(config)
     (into / "objects" / "info").mkdir(parents=True)
-    alternates = f"{git_dir.absolute() / 'objects'}\n{repo.absolute() / '.git' / 'objects'}\n"
+    alternates = f"{repo.absolute() / '.git' / 'objects'}\n"
     (into / "objects" / "info" / "alternates").write_text(alternates)
+    _copy_objects(git_dir, into)
     (into / "refs").mkdir()
     if head.ref is None:
         (into / "HEAD").write_text(f"{head.commit}\n")
@@ -275,15 +357,16 @@ def _snapshot(repo: Path, git_dir: Path, head: _Head, into: Path) -> None:
             ref_file = into / head.ref
             ref_file.parent.mkdir(parents=True, exist_ok=True)
             ref_file.write_text(f"{head.commit}\n")
+
+
+def _copy_index(git_dir: int, into: Path) -> None:
     index = _read_beneath(git_dir, "index", _INDEX_LIMIT)
     if index is not None:
         (into / "index").write_bytes(index)
     # A split index keeps most entries in a shared file next to it.
-    for name in (path.name for path in git_dir.iterdir()):
+    for name in _names(git_dir):
         if name.startswith("sharedindex."):
-            data = _read_beneath(git_dir, name, _INDEX_LIMIT)
-            if data is not None:
-                (into / name).write_bytes(data)
+            _copy_beneath(git_dir, name, into / name)
 
 
 def _parse_status(output: str) -> CloneStatus:
@@ -341,7 +424,14 @@ class SubprocessGit:
             )
         except FileNotFoundError as exc:
             raise SandboxError("git is not installed or not on PATH") from exc
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), _GIT_TIMEOUT)
+        except TimeoutError:
+            # Nothing sandbox runs should block; if git does anyway, don't hold the set's
+            # lock (and every later command on it) forever.
+            process.kill()
+            await process.wait()
+            return GitResult(124, "", f"git {' '.join(args)} timed out after {_GIT_TIMEOUT}s")
         return GitResult(
             returncode=process.returncode or 0,
             stdout=stdout.decode(errors="replace").strip(),
@@ -403,36 +493,56 @@ class SubprocessGit:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
+    async def _object_format(self, repo: Path) -> str:
+        result = await self._run(repo, "rev-parse", "--show-object-format")
+        return result.stdout if result.returncode == 0 and result.stdout else "sha1"
+
     async def clone_status(self, repo: Path, path: Path) -> CloneStatus | None:
-        git_dir = _clone_git_dir(path)
+        git_dir = _open_clone_git_dir(path)
         if git_dir is None:
             return None
-        head = _read_head(git_dir)
-        if head is None:
-            return None
-        with tempfile.TemporaryDirectory(prefix="sandbox-status-") as snapshot:
-            _snapshot(repo, git_dir, head, Path(snapshot))
-            env = {"GIT_DIR": snapshot, "GIT_WORK_TREE": str(path)}
-            result = await self._exec(
-                path,
-                env,
-                "--no-optional-locks",
-                "status",
-                "--porcelain=v2",
-                "--branch",
-                "--ignore-submodules=all",
-            )
+        try:
+            head = _read_head(git_dir)
+            if head is None:
+                return None
+            object_format = await self._object_format(repo)
+            with tempfile.TemporaryDirectory(prefix="sandbox-status-") as snapshot:
+                _snapshot(repo, git_dir, head, object_format, Path(snapshot))
+                _copy_index(git_dir, Path(snapshot))
+                env = {"GIT_DIR": snapshot, "GIT_WORK_TREE": str(path)}
+                result = await self._exec(
+                    path,
+                    env,
+                    "--no-optional-locks",
+                    "status",
+                    "--porcelain=v2",
+                    "--branch",
+                    "--ignore-submodules=all",
+                )
+        finally:
+            os.close(git_dir)
         return _parse_status(result.stdout) if result.returncode == 0 else None
 
     async def sync_agent_branch(self, repo: Path, path: Path, branch: str) -> SyncResult:
-        git_dir = _clone_git_dir(path)
+        git_dir = _open_clone_git_dir(path)
         if git_dir is None:
             return SyncResult(SyncOutcome.NO_CLONE)
-        expected = f"{(repo / '.git' / 'objects').absolute()}\n".encode()
-        alternates = _read_beneath(git_dir, "objects/info/alternates", 1 << 16)
-        if os.path.lexists(git_dir / "commondir") or alternates not in (None, expected):
-            # Either would have git read refs or objects from elsewhere on this machine.
-            return SyncResult(SyncOutcome.FAILED, f"{git_dir} was changed to point elsewhere")
+        try:
+            ref = f"refs/heads/{branch}"
+            commit = _read_ref(git_dir, ref) if _BRANCH_REF.match(ref) else None
+            if commit is None:
+                return SyncResult(SyncOutcome.FAILED, f"{path} has no branch {branch}")
+            object_format = await self._object_format(repo)
+            # Host git fetches from a snapshot, never from the clone's own git dir: whatever
+            # the agent made of that (symlinks, alternates, a commondir, FIFOs) can then
+            # neither bring another repository's objects into the source nor block the fetch.
+            with tempfile.TemporaryDirectory(prefix="sandbox-sync-") as snapshot:
+                _snapshot(repo, git_dir, _Head(ref, commit), object_format, Path(snapshot))
+                return await self._sync_from(repo, Path(snapshot), path, branch)
+        finally:
+            os.close(git_dir)
+
+    async def _sync_from(self, repo: Path, snapshot: Path, path: Path, branch: str) -> SyncResult:
         tip_ref = agent_tip_ref(branch)
         previous = await self._commit(repo, tip_ref)
         fetched = await self._run(
@@ -443,9 +553,8 @@ class SubprocessGit:
             "--no-write-fetch-head",
             "--no-tags",
             "--no-recurse-submodules",
-            # --strict: serve exactly this git dir, never a ``.git`` the agent put in it.
             "--upload-pack=git-upload-pack --strict",
-            str(git_dir.absolute()),
+            str(snapshot),
             f"+refs/heads/{branch}:{tip_ref}",
         )
         if fetched.returncode != 0:

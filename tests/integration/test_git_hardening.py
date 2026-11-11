@@ -8,6 +8,7 @@ source repo's ``.git`` at all) are checked in tests/integration/test_agent_git_i
 """
 
 import asyncio
+import os
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -238,23 +239,120 @@ def test_a_clone_whose_git_dir_points_elsewhere_is_neither_synced_nor_read(
     assert not marker.exists()
 
 
-@pytest.mark.parametrize("redirect", ["commondir", "alternates"])
-def test_a_clone_redirected_to_another_repository_is_not_synced(
-    make_repo: Callable[[str], Path], tmp_path: Path, redirect: str
+def _secret_commit(other: Path) -> str:
+    """A commit only ``other`` holds, with a blob the agent must never get into the source."""
+    (other / "secret.txt").write_text("TOPSECRET\n")
+    git(other, "add", "secret.txt")
+    git(other, "commit", "--quiet", "-m", "secret")
+    return git(other, "rev-parse", "HEAD")
+
+
+def _redirect(clone: Path, other: Path, secret: str, route: str) -> None:
+    """Point the clone's agent branch at ``secret`` and have ``route`` lead git to ``other``."""
+    git_dir = clone / ".git"
+    ref = git_dir / "refs" / "heads" / BRANCH
+    other_git = other / ".git"
+    git(other, "update-ref", f"refs/heads/{BRANCH}", secret)
+    if route == "commondir":
+        ref.unlink()
+        (git_dir / "commondir").write_text(f"{other_git}\n")
+        return
+    if route in ("refs-symlink", "packed-refs-symlink"):
+        ref.unlink()
+        if route == "refs-symlink":
+            shutil.rmtree(git_dir / "refs")
+            (git_dir / "refs").symlink_to(other_git / "refs")
+        else:
+            listing = clone / "evil-packed-refs"
+            listing.write_text(f"{secret} refs/heads/{BRANCH}\n")
+            (git_dir / "packed-refs").unlink(missing_ok=True)
+            (git_dir / "packed-refs").symlink_to(listing)
+        return
+    ref.write_text(f"{secret}\n")
+    alternates = git_dir / "objects" / "info" / "alternates"
+    if route == "alternates":
+        alternates.write_text(alternates.read_text() + f"{other_git / 'objects'}\n")
+    elif route == "alternates-symlink":
+        # Relative, so it resolves only where git follows it (the old route's form).
+        (clone / "evil-alternates").write_text(f"{other_git / 'objects'}\n")
+        alternates.unlink()
+        alternates.symlink_to("../../../evil-alternates")
+    elif route == "objects-symlink":
+        (git_dir / "objects").rename(git_dir / "objects.real")
+        (git_dir / "objects").symlink_to(other_git / "objects")
+    else:
+        raise AssertionError(route)
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "commondir",
+        "alternates",
+        "alternates-symlink",
+        "objects-symlink",
+        "refs-symlink",
+        "packed-refs-symlink",
+    ],
+)
+def test_sync_brings_nothing_from_another_repository_the_clone_points_at(
+    make_repo: Callable[[str], Path], tmp_path: Path, route: str
 ) -> None:
+    # The agent can read the source's objects; an object of any other repo on the host
+    # synced into the source would hand it that repo's content.
     source = make_repo("api")
     other = make_repo("other")
+    secret = _secret_commit(other)
     clone = _clone(source, tmp_path)
     _sync(source, clone)
     before = git(source, "rev-parse", BRANCH)
-    if redirect == "commondir":
-        (clone / ".git" / "commondir").write_text(f"{other / '.git'}\n")
-    else:
-        alternates = clone / ".git" / "objects" / "info" / "alternates"
-        alternates.write_text(alternates.read_text() + f"{other / '.git' / 'objects'}\n")
+    _redirect(clone, other, secret, route)
 
     assert _sync(source, clone) is SyncOutcome.FAILED
     assert git(source, "rev-parse", BRANCH) == before
+    present = subprocess.run(
+        ["git", "-C", str(source), "cat-file", "-e", f"{secret}:secret.txt"],
+        capture_output=True,
+        check=False,
+    )
+    assert present.returncode != 0
+
+
+def test_fifos_in_the_clones_git_dir_neither_hang_nor_stop_the_sync(
+    make_repo: Callable[[str], Path], tmp_path: Path
+) -> None:
+    # A FIFO where git expects a file would block a reader forever (holding sandbox's lock).
+    source = make_repo("api")
+    clone = _clone(source, tmp_path)
+    agents = _commit(clone, "agent work")
+    git_dir = clone / ".git"
+    pack = git_dir / "objects" / "pack"
+    pack.mkdir(parents=True, exist_ok=True)
+    for path in (
+        git_dir / "packed-refs",
+        git_dir / "objects" / "info" / "alternates",
+        git_dir / "objects" / "info" / "packs",
+        git_dir / "objects" / "ff" / ("f" * 38),
+        pack / "pack-evil.pack",
+        pack / "pack-evil.idx",
+        git_dir / "shallow",
+        git_dir / "config",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.unlink(missing_ok=True)
+        os.mkfifo(path)
+
+    async def sync_and_status() -> tuple[SyncOutcome, object]:
+        git_ = SubprocessGit()
+        synced = await asyncio.wait_for(git_.sync_agent_branch(source, clone, BRANCH), 60)
+        status = await asyncio.wait_for(git_.clone_status(source, clone), 60)
+        return synced.outcome, status
+
+    outcome, status = asyncio.run(sync_and_status())
+
+    assert outcome is SyncOutcome.UPDATED
+    assert git(source, "rev-parse", BRANCH) == agents
+    assert status is not None
 
 
 def test_cloning_runs_no_hook_of_the_source_or_from_a_hooks_path_in_the_checkout(

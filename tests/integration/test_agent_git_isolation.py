@@ -19,9 +19,11 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from typer.testing import Result
 
 from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
@@ -206,3 +208,41 @@ def test_nothing_the_agent_plants_in_its_clone_runs_or_is_written_on_the_host(
     assert list(victim.iterdir()) == []
     assert "* uncommitted changes, ? untracked files" in status
     assert synced == "agent work"
+
+
+def test_a_clone_pointed_at_another_host_repo_brings_none_of_it_back_nor_blocks_sandbox(
+    env: Env, api: Path, tmp_path: Path
+) -> None:
+    # The agent can read the source's objects, so an object of any other repository on the
+    # host synced into the source would hand it that repository's content. And sandbox
+    # holds the set's lock while it syncs, so a read that blocks would hang every command.
+    other = tmp_path / "other"
+    subprocess.run(["git", "init", "--quiet", "--initial-branch=main", str(other)], check=True)
+    (other / "secret.txt").write_text("TOPSECRET\n")
+    git(other, "add", "secret.txt")
+    git(other, "commit", "--quiet", "-m", "secret")
+    secret = git(other, "rev-parse", "HEAD")
+    base = git(api, "rev-parse", BRANCH)
+    ok(
+        f"printf '%s\\n' '{other}/.git/objects' > evil-alternates"
+        " && rm -f .git/objects/info/alternates"
+        " && ln -s ../../../evil-alternates .git/objects/info/alternates"
+        f" && printf '%s\\n' {secret} > .git/refs/heads/{BRANCH}"
+        " && rm -f .git/packed-refs && mkfifo .git/packed-refs"
+    )
+
+    results: list[Result] = []
+    with ThreadPoolExecutor(1) as pool:
+        for args in (["status"], ["down"], ["destroy", "--force"]):
+            run = pool.submit(invoke, [SET, *args], SubprocessGit(), SubprocessCompose())
+            results.append(run.result(timeout=300))
+
+    assert [result.exit_code for result in results] == [0, 0, 0]
+    assert "not synced into api's repo (failed)" in results[0].output
+    present = subprocess.run(
+        ["git", "-C", str(api), "cat-file", "-e", f"{secret}:secret.txt"],
+        capture_output=True,
+        check=False,
+    )
+    assert present.returncode != 0
+    assert git(api, "rev-parse", BRANCH) == base
