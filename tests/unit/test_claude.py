@@ -120,3 +120,35 @@ def test_claude_exits_with_claude_codes_exit_status(env: Env) -> None:
     compose.exec_status = 4
 
     assert invoke(["jira-123", "claude"], git, compose).exit_code == 4
+
+
+def test_claude_passes_its_arguments_through_to_claude_code(env: Env) -> None:
+    git, compose = provision(env)
+
+    result = invoke(["jira-123", "claude", "--version"], git, compose)
+
+    assert result.exit_code == 0, result.output
+    assert compose.execs == [
+        ("sandbox-jira-123", "agent", ["claude", "--version"], "/workspace/jira-123")
+    ]
+
+
+def test_claude_passes_options_with_values_and_a_prompt_through_in_order(env: Env) -> None:
+    git, compose = provision(env)
+
+    result = invoke(
+        ["jira-123", "claude", "-p", "fix the test", "--model", "opus", "--", "--help"],
+        git,
+        compose,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert compose.execs[-1][2] == ["claude", "-p", "fix the test", "--model", "opus", "--help"]
+
+
+def test_claude_help_documents_the_pass_through(env: Env) -> None:
+    result = invoke(["jira-123", "claude", "--help"], FakeGit(), FakeCompose())
+
+    assert result.exit_code == 0
+    assert "ARGS" in result.output
+    assert "passed to Claude Code" in result.output

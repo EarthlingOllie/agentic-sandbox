@@ -1,4 +1,8 @@
-"""``sandbox SET claude``: run Claude Code interactively in the set's agent container.
+"""``sandbox SET claude [ARGS]...``: run Claude Code in the set's agent container.
+
+Whatever follows the verb is passed to Claude Code unchanged (``sandbox SET claude --version``,
+``sandbox SET claude -p "..."``); ``--help`` shows this verb's help, so Claude Code's own is
+``sandbox SET claude -- --help``.
 
 Every set's agent mounts the host's ``~/.claude/`` as its ``CLAUDE_CONFIG_DIR``, so all sets
 share one login. In the (Linux) container Claude Code keeps its token in plaintext in
@@ -10,7 +14,7 @@ for ``/login`` and that the login will be shared; afterwards the file is kept ow
 import asyncio
 import stat
 from pathlib import Path
-from typing import Final
+from typing import Annotated, Final
 
 import typer
 
@@ -39,7 +43,7 @@ def _restrict(credentials: Path) -> None:
         pass  # the user quit without logging in
 
 
-async def _run_claude(compose: Compose, set_name: str, target: ExecTarget) -> int:
+async def _run_claude(compose: Compose, set_name: str, target: ExecTarget, args: list[str]) -> int:
     if AGENT_SERVICE not in await compose.running_services(target.project):
         raise SandboxError(
             f"set {set_name!r} is not running (its agent container is not up); "
@@ -53,18 +57,32 @@ async def _run_claude(compose: Compose, set_name: str, target: ExecTarget) -> in
             err=True,
         )
     try:
-        return await run_in(compose, target, ["claude"])
+        return await run_in(compose, target, ["claude", *args])
     finally:
         _restrict(credentials)
 
 
-def claude(ctx: typer.Context) -> None:
+# Unknown options belong to Claude Code, not to this verb: they land in ARGS in order.
+CONTEXT_SETTINGS: Final = {"ignore_unknown_options": True}
+
+
+def claude(
+    ctx: typer.Context,
+    args: Annotated[
+        list[str] | None,
+        typer.Argument(
+            metavar="[ARGS]...",
+            help="Arguments passed to Claude Code as they are (after `--` for --help).",
+            show_default=False,
+        ),
+    ] = None,
+) -> None:
     """Run Claude Code in the set's agent, starting in /workspace/SET."""
     set_name = current_set(ctx, "claude")
     try:
         plan = load_plan(load_config().sets_root, set_name)
         target = agent_target(set_name, plan)
-        status = asyncio.run(_run_claude(get_deps(ctx).compose, set_name, target))
+        status = asyncio.run(_run_claude(get_deps(ctx).compose, set_name, target, args or []))
     except SandboxError as exc:
         failure(exc)
     raise typer.Exit(code=status)

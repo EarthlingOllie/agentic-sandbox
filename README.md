@@ -226,6 +226,15 @@ $ sandbox jira-123 claude    # first time: log in with /login
 $ sandbox jira-456 claude    # already logged in
 ```
 
+Whatever follows the verb is passed to Claude Code as it is, so the non-interactive forms
+work too. `--help` is the verb's own; put `--` before it to get Claude Code's.
+
+```console
+$ sandbox jira-123 claude --version
+$ sandbox jira-123 claude -p "run the tests and fix what fails"
+$ sandbox jira-123 claude -- --help
+```
+
 Accepted trade-offs:
 
 - **Plaintext token on macOS.** Claude Code on a Mac host keeps its login in the Keychain,
@@ -526,21 +535,36 @@ $ uv run ruff format --check . && uv run ruff check .
 $ uv run pyright                   # strict mode
 $ uv run pytest -m "not integration"   # unit: fakes, runs on Linux and macOS
 $ uv run pytest -m integration         # integration: real git + Docker Compose (Linux in CI)
-$ SANDBOX_E2E=1 uv run pytest -m e2e   # end to end: sudo setup, real /etc/hosts (throwaway runner only)
+$ SANDBOX_E2E=1 uv run pytest -m e2e   # walkthrough harness: sudo setup, every verb (changes the machine)
 ```
 
 CI (`.github/workflows/ci.yml`) enforces all of the above except the end-to-end suite.
 
-The **end-to-end suite** (`tests/e2e/`) drives the installed `sandbox` CLI as a user would,
-the privileged parts included: `sudo sandbox setup`, then two sets brought `up` in parallel
-(each with two repos sharing `mysql`, one with an init hook, and a web app with an extra
-host), HTTPS by hostname through the real `/etc/hosts` and the installed mkcert CA from the
-host and from the agent, `down`, `destroy` and `sudo sandbox setup --uninstall`. It changes
-the machine it runs on (the helper, a sudoers rule, the mkcert CA, `/etc/hosts`), so it runs
-only with `SANDBOX_E2E=1`, as a non-root user with passwordless sudo. Its workflow
-(`.github/workflows/e2e.yml`) runs it on a GitHub-hosted Ubuntu runner nightly, on demand
-and for `v*` tags, not on every push. Before each release a person also works through the
-[macOS release checklist](docs/release-checklist-macos.md).
+The **walkthrough harness** (`tests/e2e/`) drives the installed `sandbox` CLI as a user
+would, on a real machine, through every verb: `sudo sandbox setup`, `up --repos`, `save`
+(from repos and from a set), `templates`, `up --from`, a repeated `up`, `up --recreate`,
+`status`, `SET status` and `urls` (each also with `--json`), `sh`, `sh --repo`,
+`sh SERVICE`, `claude --version`, bare `prune`, `down`, `destroy` (its refusals, `--force`,
+`--branches`), `SET prune` and `sudo sandbox setup --uninstall`. Each step checks the exit
+status and what the verb promises, and the run ends with a report: every command, what was
+checked, pass or fail, and the output of anything that failed. A failed check does not stop
+the steps that do not depend on it, and whatever the run created is always removed.
+
+It changes the machine it runs on (the resolver configuration, the mkcert CA), so it runs
+only with `SANDBOX_E2E=1`, as a non-root user with passwordless sudo, on Linux with
+systemd-resolved. On a machine that is already set up, add `SANDBOX_E2E_KEEP_SETUP=1`: the
+harness then runs neither `setup` nor `setup --uninstall`, needs no sudo, and uses the
+domain your setup installed. Either way it keeps its sets and templates in a temp directory,
+never yours.
+
+```console
+$ SANDBOX_E2E=1 uv run pytest -m e2e tests/e2e                           # throwaway machine
+$ SANDBOX_E2E=1 SANDBOX_E2E_KEEP_SETUP=1 uv run pytest -m e2e tests/e2e  # keep your setup
+```
+
+Its workflow (`.github/workflows/e2e.yml`) runs it on a GitHub-hosted Ubuntu runner nightly,
+on demand and for `v*` tags, not on every push. Before each release a person also works
+through the [macOS release checklist](docs/release-checklist-macos.md).
 
 ### Conventions
 

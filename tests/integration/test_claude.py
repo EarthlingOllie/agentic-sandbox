@@ -1,7 +1,9 @@
 """`sandbox SET claude` against real Docker: Claude Code is reachable in the agent at the set's
-workspace, and a stopped set fails clearly. The `/login` flow needs a real Claude account, so
-it is covered by fakes in the unit tests and verified by hand."""
+workspace, the verb passes its arguments through to it, and a stopped set fails clearly. The
+`/login` flow needs a real Claude account, so it is covered by fakes in the unit tests and
+verified by hand."""
 
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
@@ -29,7 +31,7 @@ def compose_down() -> None:
 
 
 def test_claude_code_runs_in_the_agent_and_a_stopped_set_fails_clearly(
-    env: Env, make_repo: Callable[[str], Path]
+    env: Env, make_repo: Callable[[str], Path], capfd: pytest.CaptureFixture[str]
 ) -> None:
     make_repo("api")
     git, compose = SubprocessGit(), SubprocessCompose()
@@ -56,6 +58,13 @@ def test_claude_code_runs_in_the_agent_and_a_stopped_set_fails_clearly(
             text=True,
         ).stdout
         assert "Claude Code" in version
+
+        # The verb itself, without a login: Claude Code starts in the agent and answers
+        # with its version on the terminal the verb was run from.
+        capfd.readouterr()
+        answered = invoke([SET, "claude", "--version"], git, compose)
+        assert answered.exit_code == 0, answered.output
+        assert re.search(r"^\d+\.\d+\.\d+\S* \(Claude Code\)$", capfd.readouterr().out, re.M)
 
         assert invoke([SET, "down"], git, compose).exit_code == 0
         stopped = invoke([SET, "claude"], git, compose)

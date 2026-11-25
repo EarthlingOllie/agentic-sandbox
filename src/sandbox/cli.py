@@ -18,6 +18,7 @@ from typer.core import TyperGroup
 
 from sandbox.bindings import format_bindings
 from sandbox.clones import CloneOutcome
+from sandbox.commands.claude import CONTEXT_SETTINGS as CLAUDE_CONTEXT_SETTINGS
 from sandbox.commands.claude import claude
 from sandbox.commands.destroy import destroy
 from sandbox.commands.down import down
@@ -192,7 +193,7 @@ app.command()(down)
 app.command()(save)
 app.command()(templates)
 app.command()(sh)
-app.command()(claude)
+app.command(context_settings=CLAUDE_CONTEXT_SETTINGS)(claude)
 app.command()(status)
 app.command()(prune)
 app.command()(destroy)
