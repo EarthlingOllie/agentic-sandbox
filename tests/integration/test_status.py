@@ -14,7 +14,7 @@ from sandbox.compose.cli import SubprocessCompose
 from sandbox.docker import SubprocessDocker
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import container_address, git, unique_set
+from tests.integration.conftest import container_address, git, remove_project, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -26,11 +26,7 @@ SET = unique_set("status")
 
 
 def compose_down() -> None:
-    subprocess.run(
-        ["docker", "compose", "-p", project_name(SET), "down", "--volumes", "--remove-orphans"],
-        capture_output=True,
-        check=False,
-    )
+    remove_project(project_name(SET))
 
 
 @pytest.fixture

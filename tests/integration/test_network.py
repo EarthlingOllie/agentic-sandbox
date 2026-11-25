@@ -17,6 +17,7 @@ from tests.integration.conftest import (
     container_address,
     git,
     published_ports,
+    remove_project,
     resolve,
     unique_set,
 )
@@ -39,19 +40,7 @@ def docker(*args: str) -> str:
 
 def down_all() -> None:
     for name in SETS:
-        subprocess.run(
-            [
-                "docker",
-                "compose",
-                "-p",
-                project_name(name),
-                "down",
-                "--volumes",
-                "--remove-orphans",
-            ],
-            capture_output=True,
-            check=False,
-        )
+        remove_project(project_name(name))
 
 
 @pytest.fixture

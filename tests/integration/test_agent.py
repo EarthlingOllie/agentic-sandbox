@@ -22,7 +22,7 @@ from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import container_address, git, resolve, unique_set
+from tests.integration.conftest import container_address, git, remove_project, resolve, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -53,11 +53,7 @@ def api(env: Env, make_repo: Callable[[str], Path]) -> Iterator[Path]:
     result = invoke([SET, "up", "--repos", "api"], SubprocessGit(), SubprocessCompose())
     assert result.exit_code == 0, result.output
     yield path
-    subprocess.run(
-        ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
-        capture_output=True,
-        check=False,
-    )
+    remove_project(PROJECT)
 
 
 def test_agent_is_hardened_and_ships_the_tools(api: Path) -> None:
@@ -224,8 +220,4 @@ def test_with_an_agent_override_the_agent_answers_by_name_from_inside_the_set(
         # ...and the resolver answers the set network's address, not the override network's.
         assert resolve(name) == (on_set_network,)
     finally:
-        subprocess.run(
-            ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
-            capture_output=True,
-            check=False,
-        )
+        remove_project(PROJECT)

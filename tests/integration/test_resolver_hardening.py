@@ -31,7 +31,13 @@ from sandbox.compose.resolver import (
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
 from tests.dns import NOERROR, REFUSED, Answer, lookup
-from tests.integration.conftest import git, resolver_networks, sandbox_argv, unique_set
+from tests.integration.conftest import (
+    git,
+    remove_project,
+    resolver_networks,
+    sandbox_argv,
+    unique_set,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -162,11 +168,7 @@ def repo(env: Env) -> Iterator[Path]:
     git(path, "commit", "--quiet", "-m", "initial")
     yield path
     for set_name in SETS:
-        subprocess.run(
-            ["docker", "compose", "-p", project_name(set_name), "down", "--volumes"],
-            capture_output=True,
-            check=False,
-        )
+        remove_project(project_name(set_name))
 
 
 def test_the_resolver_runs_without_privileges_a_writable_filesystem_or_mounts(repo: Path) -> None:

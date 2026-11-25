@@ -14,7 +14,7 @@ from sandbox.compose.dedup import ServiceConflictError, resolve
 from sandbox.compose.services import RepoCompose, load_repo_compose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git, unique_set
+from tests.integration.conftest import git, remove_project, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -50,11 +50,7 @@ def repo_compose(name: str, path: Path) -> RepoCompose:
 @pytest.fixture
 def cleanup() -> Iterator[None]:
     yield
-    subprocess.run(
-        ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
-        capture_output=True,
-        check=False,
-    )
+    remove_project(PROJECT)
 
 
 def test_normalisation_makes_extends_and_list_environment_match(env: Env) -> None:

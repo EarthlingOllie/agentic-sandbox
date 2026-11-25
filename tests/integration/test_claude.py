@@ -13,7 +13,7 @@ from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import unique_set
+from tests.integration.conftest import remove_project, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -25,11 +25,7 @@ PROJECT = project_name(SET)
 
 
 def compose_down() -> None:
-    subprocess.run(
-        ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
-        capture_output=True,
-        check=False,
-    )
+    remove_project(PROJECT)
 
 
 def test_claude_code_runs_in_the_agent_and_a_stopped_set_fails_clearly(

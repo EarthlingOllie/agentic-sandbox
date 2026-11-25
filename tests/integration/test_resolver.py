@@ -30,7 +30,7 @@ from sandbox.resolver_config import RESOLVED_DROP_IN, resolved_drop_in_text
 from tests.conftest import Env, invoke
 from tests.dns import NOERROR, REFUSED, Answer, lookup
 from tests.fakes_host import make_host
-from tests.integration.conftest import git, resolver_networks, unique_set
+from tests.integration.conftest import git, remove_project, resolver_networks, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -109,11 +109,7 @@ def repo(env: Env) -> Iterator[Path]:
     git(path, "commit", "--quiet", "-m", "initial")
     yield path
     for set_name in SETS:
-        subprocess.run(
-            ["docker", "compose", "-p", project_name(set_name), "down", "--volumes"],
-            capture_output=True,
-            check=False,
-        )
+        remove_project(project_name(set_name))
 
 
 def test_two_sets_resolve_side_by_side_each_name_to_its_own_container(repo: Path) -> None:

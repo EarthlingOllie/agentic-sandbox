@@ -19,10 +19,13 @@ processes start them with :func:`sandbox_argv`, which gives them the same machin
 host's root is the one thing a subprocess cannot be handed otherwise).
 
 The resolver is global to the host as well, and deliberately shared: every test's sets are
-attached to the one resolver, as real sets are. Tests clean up with a plain ``docker compose
-down``, which cannot remove a network the resolver is still on, so the resolver is taken
-off this run's networks before each test's fixtures are torn down
-(:func:`pytest_runtest_teardown`). The resolver itself is left running, like after ``down``.
+attached to the one resolver, as real sets are, a set without services included (its agent
+has a set hostname). Docker cannot remove a network the resolver is still on, so a test
+that removes a set's project itself, rather than with ``sandbox <set> down``, does it with
+:func:`remove_project`, which takes the resolver off the set's network first. As a second
+line, the resolver is taken off this run's networks before each test's fixtures are torn
+down (:func:`pytest_runtest_teardown`). The resolver itself is left running, like after
+``down``.
 """
 
 import itertools
@@ -144,6 +147,26 @@ def resolver_networks() -> set[str]:
         check=False,
     )  # fmt: skip
     return set(json.loads(inspected.stdout) or {}) if inspected.returncode == 0 else set()
+
+
+def remove_project(project: str) -> None:
+    """Remove a set's Compose project the way a test cleans up: containers, volumes and the
+    network, whatever state the set is in (a no-op when there is nothing left).
+
+    The resolver is taken off the set's network first: with it still attached ``compose
+    down`` removes the containers but leaves the network behind, and enough leaked networks
+    exhaust Docker's address pools.
+    """
+    subprocess.run(
+        ["docker", "network", "disconnect", "--force", f"{project}_default", RESOLVER_CONTAINER],
+        capture_output=True,
+        check=False,
+    )
+    subprocess.run(
+        ["docker", "compose", "-p", project, "down", "--volumes", "--remove-orphans"],
+        capture_output=True,
+        check=False,
+    )
 
 
 @pytest.hookimpl(tryfirst=True)

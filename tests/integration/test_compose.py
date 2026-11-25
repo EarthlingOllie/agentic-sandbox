@@ -11,7 +11,7 @@ from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git, unique_set
+from tests.integration.conftest import git, remove_project, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -45,11 +45,7 @@ def mysql_repo(env: Env) -> Iterator[Path]:
     git(path, "add", "-A")
     git(path, "commit", "--quiet", "-m", "initial")
     yield path
-    subprocess.run(
-        ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
-        capture_output=True,
-        check=False,
-    )
+    remove_project(PROJECT)
 
 
 def test_up_waits_for_healthy_services_and_down_removes_them(env: Env, mysql_repo: Path) -> None:

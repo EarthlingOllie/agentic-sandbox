@@ -25,6 +25,7 @@ from tests.integration.conftest import (
     container_address,
     git,
     published_ports,
+    remove_project,
     resolve,
     unique_set,
 )
@@ -44,11 +45,7 @@ ADMIN = f"admin.{SET}.test"
 
 
 def compose_down() -> None:
-    subprocess.run(
-        ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
-        capture_output=True,
-        check=False,
-    )
+    remove_project(PROJECT)
 
 
 @pytest.fixture

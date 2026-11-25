@@ -16,7 +16,7 @@ import pytest
 
 from sandbox.compose import project_name
 from tests.conftest import Env
-from tests.integration.conftest import git, sandbox_argv, unique_set
+from tests.integration.conftest import git, remove_project, sandbox_argv, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -97,11 +97,7 @@ def make_repo(env: Env, name: str, compose: str) -> Path:
 def _cleanup() -> Iterator[None]:
     yield
     for set_name in SETS:
-        subprocess.run(
-            ["docker", "compose", "-p", project_name(set_name), "down", "--volumes"],
-            capture_output=True,
-            check=False,
-        )
+        remove_project(project_name(set_name))
 
 
 def test_parallel_sets_fail_independently_and_rollback_keeps_clones(env: Env) -> None:

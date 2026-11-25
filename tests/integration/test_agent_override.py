@@ -17,7 +17,7 @@ from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import unique_set
+from tests.integration.conftest import remove_project, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -42,11 +42,7 @@ def project_containers() -> list[str]:
 @pytest.fixture(autouse=True)
 def _cleanup() -> Iterator[None]:
     yield
-    subprocess.run(
-        ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
-        capture_output=True,
-        check=False,
-    )
+    remove_project(PROJECT)
 
 
 def write_agent_override(env: Env, agent: dict[str, object]) -> None:

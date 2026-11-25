@@ -13,7 +13,7 @@ import yaml
 from sandbox.compose import project_name
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git, unique_set
+from tests.integration.conftest import git, remove_project, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -99,11 +99,7 @@ def test_concurrent_up_processes_on_the_same_repo(
     finally:
         # Each set also started its agent container.
         for set_name in sets:
-            subprocess.run(
-                ["docker", "compose", "-p", project_name(set_name), "down", "--volumes"],
-                capture_output=True,
-                check=False,
-            )
+            remove_project(project_name(set_name))
 
     for process, (stdout, stderr) in zip(processes, outputs, strict=True):
         assert process.returncode == 0, stdout + stderr

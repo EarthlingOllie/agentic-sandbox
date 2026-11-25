@@ -11,7 +11,7 @@ from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git, unique_set
+from tests.integration.conftest import git, remove_project, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -51,11 +51,7 @@ def databases() -> list[str]:
 @pytest.fixture
 def cleanup() -> Iterator[None]:
     yield
-    subprocess.run(
-        ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
-        capture_output=True,
-        check=False,
-    )
+    remove_project(PROJECT)
 
 
 def test_hook_creates_its_database_in_the_shared_service(env: Env, cleanup: None) -> None:
