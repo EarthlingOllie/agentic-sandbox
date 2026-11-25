@@ -1,9 +1,10 @@
 """The hosts file: one ``# sandbox:<set>`` block per set, holding exactly its hostnames.
 
-``up`` writes the set's block once its services are up (a provision step, so rollback
-removes it again), and ``down`` removes it. Lines outside a set's own block are never
-touched. Every rewrite reads, changes and replaces the file under an exclusive ``flock``,
-so concurrent ``sandbox`` processes never lose each other's blocks.
+No verb writes or removes a block any more: set hostnames are answered by the resolver
+(``sandbox.resolver``). The writers remain until the loopback machinery is deleted. Lines
+outside a set's own block are never touched. Every rewrite reads, changes and replaces the
+file under an exclusive ``flock``, so concurrent ``sandbox`` processes never lose each
+other's blocks.
 
 Two writers share that logic:
 
@@ -26,8 +27,6 @@ from ipaddress import IPv4Network
 from pathlib import Path
 from typing import Final, Protocol
 
-from sandbox.bindings import bindings
-from sandbox.compose.web import extra_hostnames
 from sandbox.config import Config
 from sandbox.errors import SandboxError
 from sandbox.hosts_block import (
@@ -42,7 +41,6 @@ from sandbox.hosts_block import (
     update_hosts_file,
 )
 from sandbox.names import DEFAULT_DOMAIN, validate_set_name
-from sandbox.pipeline import UpContext
 
 __all__ = [
     "HELPER",
@@ -55,11 +53,9 @@ __all__ = [
     "block_start",
     "check_entries",
     "hosts_writer",
-    "remove_hosts_block",
     "render_block",
     "replace_block",
     "update_hosts_file",
-    "write_hosts_block",
 ]
 
 # The root-owned copy `sudo sandbox setup` installs, by absolute path: the sudoers rule
@@ -167,27 +163,3 @@ def hosts_writer(config: Config, runner: Runner = run_command) -> HostsWriter:
     if config.hosts_file is not None:
         return DirectHostsWriter(config.hosts_file, config.lock_dir / "hosts.lock", config.domain)
     return HelperHostsWriter(runner, domain=config.domain)
-
-
-# --- up steps --------------------------------------------------------------------------
-
-
-def _writer(ctx: UpContext) -> HostsWriter:
-    return ctx.hosts if ctx.hosts is not None else hosts_writer(ctx.config)
-
-
-async def write_hosts_block(ctx: UpContext) -> None:
-    """Post-up step: the set's block holds exactly its current hostnames and IPs."""
-    found = bindings(
-        ctx.set_name, ctx.config.domain, ctx.graph, ctx.lease, extra_hostnames(ctx.web_apps)
-    )
-    if ctx.lease is None or not found:
-        await _writer(ctx).remove(ctx.set_name)  # a no-op unless services left the plan
-        return
-    await _writer(ctx).write(
-        ctx.set_name, ctx.lease.block, {binding.hostname: binding.ip for binding in found}
-    )
-
-
-async def remove_hosts_block(ctx: UpContext) -> None:
-    await _writer(ctx).remove(ctx.set_name)

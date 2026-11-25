@@ -2,7 +2,6 @@
 and set directory, never silently losing uncommitted, unsynced or unpushed agent work (fake
 git, Compose and Docker)."""
 
-import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,11 +60,6 @@ def stopped_set(env: Env, *names: str) -> tuple[FakeGit, FakeDocker, list[Path]]
     return git, docker, repos
 
 
-def leased(env: Env) -> set[str]:
-    leases = env.state_dir / "leases.json"
-    return set(json.loads(leases.read_text())["sets"]) if leases.exists() else set()
-
-
 def assert_untouched(env: Env, git: FakeGit, docker: FakeDocker, repos: list[Path]) -> None:
     set_dir = env.set_dir("jira-123")
     assert (set_dir / "sandbox.yaml").is_file()
@@ -73,7 +67,6 @@ def assert_untouched(env: Env, git: FakeGit, docker: FakeDocker, repos: list[Pat
         assert (set_dir / repo.name / ".git").is_dir()
         assert git.clone(set_dir / repo.name).branch == BRANCH
     assert docker.compose.calls == []
-    assert "jira-123" in leased(env)
 
 
 def test_destroy_prunes_the_set_and_removes_clones_and_set_dir_keeping_branches(
@@ -87,7 +80,6 @@ def test_destroy_prunes_the_set_and_removes_clones_and_set_dir_keeping_branches(
 
     assert code == 0, out + err
     assert docker.compose.calls == [("down", project_name("jira-123"))]
-    assert "jira-123" not in leased(env)
     assert not env.set_dir("jira-123").exists()
     for repo in repos:
         assert BRANCH in git.repo(repo).branches

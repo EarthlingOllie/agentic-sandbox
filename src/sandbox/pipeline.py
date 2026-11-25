@@ -4,8 +4,6 @@
 
 1. **Validation steps** check everything that can fail cheaply. They create nothing, so a
    failure here needs no rollback; every one of them finishes before any container starts.
-   The one exception is the set's IP lease (``sandbox.bindings``): ``up`` gives back a lease
-   it created whenever it fails before the set's plan exists.
 2. **Provision steps** create things in order. If one fails, or ``up`` is cancelled (Ctrl-C),
    the steps that started are rolled back in reverse order. Rollback is shielded from
    cancellation, and Ctrl-C (SIGINT) is ignored while it runs, so a second Ctrl-C cannot
@@ -13,8 +11,8 @@
    says so and names the Compose project that may be left.
 
 A step is a name, an async ``run(ctx)`` and an optional async ``rollback(ctx)``. Rollback
-undoes the set's own infrastructure only (containers, network, volumes, host entries, the
-resolver's attachment); plan
+undoes the set's own infrastructure only (containers, network, volumes, the resolver's
+attachment); plan
 and the agent's clones are kept so rerunning ``up`` resumes. Steps that fan out (one task per repo)
 use :func:`fail_fast`, a ``TaskGroup`` that cancels sibling work on the first failure.
 """
@@ -26,7 +24,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Generator, Iterable,
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import Any, Final
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.certs import Mkcert, SetCertificate, SubprocessMkcert
@@ -39,13 +37,9 @@ from sandbox.config import Config
 from sandbox.docker import Docker, SubprocessDocker
 from sandbox.errors import SandboxError
 from sandbox.git import Git
-from sandbox.leases import SetLease
 from sandbox.plan import SetPlan
 from sandbox.platforms import Host
 from sandbox.state import SetState, UpAction
-
-if TYPE_CHECKING:
-    from sandbox.hosts import HostsWriter
 
 Warn = Callable[[str], None]
 
@@ -69,8 +63,6 @@ class UpContext:
     plan_on_disk: bool
     recreate: bool
     images: ImageProbe = field(default_factory=DockerImageProbe)
-    # Writes the set's hosts block; None means the one the config selects.
-    hosts: "HostsWriter | None" = None
     mkcert: Mkcert = field(default_factory=SubprocessMkcert)
     host: Host = field(default_factory=Host)
     # Starts, attaches and detaches the resolver.
@@ -82,12 +74,6 @@ class UpContext:
     running: set[str] = field(default_factory=set[str])
     state: SetState = SetState.ABSENT
     action: UpAction = UpAction.PROVISION
-    # macOS: how many of the pool's /24s have lo0 aliases (None: no limit, as on Linux).
-    alias_blocks: int | None = None
-    # The set's loopback IP lease (None when it has no services).
-    lease: SetLease | None = None
-    # True when this `up` created the lease (the set had none before).
-    lease_created: bool = False
     # The repos' HTTPS web apps, and the mkcert CA certificate (None without a web app).
     web_apps: list[WebApp] = field(default_factory=list[WebApp])
     root_ca: Path | None = None

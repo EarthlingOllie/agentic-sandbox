@@ -2,7 +2,9 @@
 
 Every container sandbox starts for a set carries the ``sandbox.set=<set>`` label
 (``sandbox.compose``), so one ``docker ps`` over that label finds every set's containers,
-including leftovers whose set directory is gone. The resolver (``sandbox.compose.resolver``)
+including leftovers whose set directory is gone, and tells where each running one is: its
+address on its set's network, which is where the developer's machine reaches it now that
+nothing is published. The resolver (``sandbox.compose.resolver``)
 is started from its bundled Compose project and attached to and detached from set networks
 here. Unit tests substitute ``tests.fakes_docker.FakeDocker``.
 """
@@ -12,6 +14,7 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
@@ -21,10 +24,12 @@ from sandbox.compose.resolver import (
     RESOLVER_CONTAINER,
     RESOLVER_PROJECT,
     resolver_environment,
+    set_network,
 )
 from sandbox.errors import SandboxError
 
 SERVICE_LABEL: Final = "com.docker.compose.service"
+RUNNING: Final = "running"
 # The throwaway container that deletes root-owned files runs this image: the default agent
 # image is built from it, so it is already on any machine that has run a set.
 CLEANUP_IMAGE: Final = "ubuntu:24.04"
@@ -41,6 +46,9 @@ class Container:
     service: str
     state: str  # Docker's state: created, running, paused, restarting, exited, dead
     health: str | None  # healthy, unhealthy, starting; None without a healthcheck
+    # Its current address on its set's network; None unless it is running there. Docker
+    # assigns it when the container starts, so it changes between `up`s.
+    address: IPv4Address | None = None
 
 
 class Docker(Protocol):
@@ -175,9 +183,23 @@ def _container(document: dict[str, Any]) -> Container:
     state = cast(dict[str, Any], document.get("State") or {})
     health = cast(dict[str, Any] | None, state.get("Health"))
     name = str(document.get("Name") or "").lstrip("/")
+    set_name = labels.get(SET_LABEL, "")
+    status = str(state.get("Status") or "unknown")
     return Container(
-        set_name=labels.get(SET_LABEL, ""),
+        set_name=set_name,
         service=labels.get(SERVICE_LABEL) or name,
-        state=str(state.get("Status") or "unknown"),
+        state=status,
         health=str(health["Status"]) if health and health.get("Status") else None,
+        address=_address(document, set_name) if status == RUNNING else None,
     )
+
+
+def _address(document: dict[str, Any], set_name: str) -> IPv4Address | None:
+    """The container's address on its set's network, as `docker container inspect` has it."""
+    settings = cast(dict[str, Any], document.get("NetworkSettings") or {})
+    networks = cast(dict[str, Any], settings.get("Networks") or {})
+    endpoint = cast(dict[str, Any], networks.get(set_network(set_name)) or {})
+    try:
+        return IPv4Address(str(endpoint.get("IPAddress") or ""))
+    except ValueError:
+        return None

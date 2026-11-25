@@ -20,10 +20,13 @@ def status(
         bool, typer.Option("--json", help="Print the same facts as JSON, for scripts.")
     ] = False,
 ) -> None:
-    """List every set with its state, or (with SET) its services, hostnames, IPs and repos.
+    """List every set with its state, or (with SET) its services, hostnames and repos.
 
-    States: running, stopped, partial (some services down), orphaned (containers or an IP
-    lease left behind without a set plan; `sandbox prune` clears them).
+    A running service is shown with its container's current address; connect to the
+    hostname, which stays the same across `down` and `up`.
+
+    States: running, stopped, partial (some services down), orphaned (containers left
+    behind without a set plan; `sandbox prune` clears them).
     """
     set_name = ctx.meta.get(SET_META_KEY)
     try:
@@ -55,7 +58,7 @@ def render_set(detail: SetStatus) -> str:
     lines = [heading, ""]
     lines.append(
         _table(
-            ["SERVICE", "STATE", "HEALTH", "HOSTNAME", "IP"],
+            ["SERVICE", "STATE", "HEALTH", "HOSTNAME", "ADDRESS"],
             [
                 [s.name, s.state, s.health or "-", s.hostname or "-", str(s.ip or "-")]
                 for s in detail.services

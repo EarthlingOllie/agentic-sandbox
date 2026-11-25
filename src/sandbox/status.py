@@ -1,15 +1,17 @@
-"""Set states for ``status``: set directories and leases reconciled against Docker labels.
+"""Set states for ``status``: set directories reconciled against Docker labels.
 
-Three sources describe sets, and none of them alone is the truth:
+Two sources describe sets, and neither alone is the truth:
 
 - the sets root: a set directory with a plan (``sandbox.yaml``) is a set;
-- the lease file: a set's sticky /24 and its hostnames' IPs (``sandbox.leases``);
-- Docker: every container labelled ``sandbox.set=<set>`` (``sandbox.docker``).
+- Docker: every container labelled ``sandbox.set=<set>`` (``sandbox.docker``), and the
+  address of each running one. Nothing else records where a service is, so a stopped
+  service has a set hostname and no address.
 
 A set with a plan is **running** when every service it expects (its repos' services and
 the agent) has a running container, **stopped** when none does and **partial** in between.
-Anything else is **orphaned**: containers or a lease whose set has no plan, or a set
-directory that never got one. ``prune`` clears orphans.
+Anything else is **orphaned**: containers whose set has no plan, or a set directory that
+never got one. ``prune`` clears orphans. A lease file left by the loopback model is not
+read: nothing leases IPs any more, so nothing could clear an orphan it described.
 
 One set's status first syncs each agent clone's ``agent/<set>`` into its source repo
 (``sandbox.clones``), then reports each clone's branch and changes.
@@ -18,10 +20,10 @@ One set's status first syncs each agent clone's ``agent/<set>`` into its source 
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass
+from ipaddress import IPv4Address
 from pathlib import Path
 
 from sandbox.agent import set_services
-from sandbox.bindings import lease_store
 from sandbox.clones import CloneManager
 from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.network import hostname
@@ -29,7 +31,6 @@ from sandbox.config import Config
 from sandbox.docker import Container, Docker
 from sandbox.errors import SandboxError
 from sandbox.git import Git
-from sandbox.leases import SetLease
 from sandbox.models.status import (
     RepoStatus,
     ServiceStatus,
@@ -47,14 +48,13 @@ MISSING = "missing"
 
 @dataclass(frozen=True)
 class _Observed:
-    """One snapshot of the three sources, keyed by set name."""
+    """One snapshot of the two sources, keyed by set name."""
 
     set_dirs: set[str]
-    leases: dict[str, SetLease]
     containers: dict[str, list[Container]]
 
     def names(self) -> list[str]:
-        return sorted(self.set_dirs | self.leases.keys() | self.containers.keys())
+        return sorted(self.set_dirs | self.containers.keys())
 
 
 class StatusReader:
@@ -76,12 +76,11 @@ class StatusReader:
             raise SandboxError(f"no set {set_name!r}: {plan_file} does not exist")
         summary = self._summary(set_name, observed)
         plan = self._plan(set_name)
-        lease = observed.leases.get(set_name)
         containers = observed.containers.get(set_name, [])
         expected = self._expected(plan) if plan is not None else set[str]()
         names = sorted(expected | {c.service for c in containers})
         domain = self._config.domain
-        services = [_service(set_name, domain, name, containers, lease) for name in names]
+        services = [_service(set_name, domain, name, containers) for name in names]
         repos = await self._repos(set_name, plan) if plan is not None else []
         return SetStatus(
             name=set_name,
@@ -91,6 +90,18 @@ class StatusReader:
             services=services,
             repos=repos,
         )
+
+    async def addresses(self, set_name: str) -> tuple[SetStateName, dict[str, IPv4Address]]:
+        """The set's state and each running service's current address, from one snapshot."""
+        observed = await self._observe()
+        if set_name not in observed.names():
+            # No plan and nothing left of it in Docker: nothing runs.
+            return SetStateName.STOPPED, {}
+        found: dict[str, IPv4Address] = {}
+        for container in observed.containers.get(set_name, []):
+            if container.state == RUNNING and container.address is not None:
+                found.setdefault(container.service, container.address)
+        return self._summary(set_name, observed).state, found
 
     def _set_dir(self, set_name: str) -> Path:
         return self._config.sets_root / set_name
@@ -105,7 +116,6 @@ class StatusReader:
             containers[container.set_name].append(container)
         return _Observed(
             set_dirs=self._set_dirs(),
-            leases=lease_store(self._config).read_all(),
             containers=dict(containers),
         )
 
@@ -140,7 +150,6 @@ class StatusReader:
                 detail=_orphan_detail(
                     has_dir=set_name in observed.set_dirs,
                     containers=len(containers),
-                    leased=set_name in observed.leases,
                 ),
             )
         running = {c.service for c in containers if c.state == RUNNING}
@@ -183,28 +192,23 @@ class StatusReader:
 
 
 def _service(
-    set_name: str, domain: str, service: str, containers: list[Container], lease: SetLease | None
+    set_name: str, domain: str, service: str, containers: list[Container]
 ) -> ServiceStatus:
     own = [c for c in containers if c.service == service]
     # With several containers for one service, a running one speaks for it.
     container = next((c for c in own if c.state == RUNNING), own[0] if own else None)
-    host = None if service == AGENT_SERVICE else hostname(service, set_name, domain)
+    running = container is not None and container.state == RUNNING
     return ServiceStatus(
         name=service,
         state=container.state if container else MISSING,
-        health=container.health if container and container.state == RUNNING else None,
-        hostname=host,
-        ip=lease.ips.get(host) if lease is not None and host is not None else None,
+        health=container.health if container and running else None,
+        hostname=None if service == AGENT_SERVICE else hostname(service, set_name, domain),
+        ip=container.address if container and running else None,
     )
 
 
-def _orphan_detail(*, has_dir: bool, containers: int, leased: bool) -> str:
-    if has_dir and not containers and not leased:
+def _orphan_detail(*, has_dir: bool, containers: int) -> str:
+    if not containers:
         return "set directory without a plan"
-    parts: list[str] = []
-    if containers:
-        parts.append(f"{containers} container{'s' if containers != 1 else ''}")
-    if leased:
-        parts.append("an IP lease")
     where = "a set directory without a plan" if has_dir else "no set directory"
-    return f"{' and '.join(parts)} with {where}"
+    return f"{containers} container{'s' if containers != 1 else ''} with {where}"

@@ -1,8 +1,8 @@
 """``destroy``: remove a set for good, without ever silently losing the agent's work.
 
 Destroying a set first syncs each agent clone's ``agent/<set>`` into its source repo
-(``sandbox.clones``), prunes the set (``sandbox.prune``: containers, network, volumes, hosts
-block, IP lease), then deletes the agent's clones and the set directory (plan, override,
+(``sandbox.clones``), prunes the set (``sandbox.prune``: containers, network, volumes),
+then deletes the agent's clones and the set directory (plan, override,
 certificate). The clones hold nothing of the source repos' own: no worktree metadata.
 
 Every check runs before anything is removed, and a refusal leaves the set as it was:
@@ -32,7 +32,6 @@ from sandbox.config import Config
 from sandbox.docker import Docker
 from sandbox.errors import SandboxError
 from sandbox.git import Git
-from sandbox.hosts import HostsWriter
 from sandbox.locking import file_lock
 from sandbox.models.status import SetStateName
 from sandbox.names import BRANCH_PREFIX, validate_set_name
@@ -68,18 +67,11 @@ def _named(items: list[str] | tuple[str, ...]) -> str:
 
 
 class Destroyer:
-    def __init__(
-        self,
-        config: Config,
-        git: Git,
-        compose: Compose,
-        docker: Docker,
-        hosts: HostsWriter | None = None,
-    ) -> None:
+    def __init__(self, config: Config, git: Git, compose: Compose, docker: Docker) -> None:
         self._config = config
         self._git = git
         self._docker = docker
-        self._pruner = Pruner(config, git, compose, docker, hosts)
+        self._pruner = Pruner(config, git, compose, docker)
         self._status = StatusReader(config, git, docker)
         self._clones = CloneManager(git, config.lock_dir)
         self._root_cleaned: list[Path] = []

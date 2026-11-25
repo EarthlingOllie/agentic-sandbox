@@ -1,4 +1,4 @@
-"""``sandbox SET urls [--json]``: the set's web app URLs and service addresses, with IPs."""
+"""``sandbox SET urls [--json]``: the set's web app URLs and service addresses."""
 
 import asyncio
 from collections.abc import Sequence
@@ -19,9 +19,11 @@ def urls(
         bool, typer.Option("--json", help="Print the same addresses as JSON, for scripts.")
     ] = False,
 ) -> None:
-    """List the set's web apps as https:// URLs and its services as host:port, with IPs.
+    """List the set's web apps as https:// URLs and its services as host:port.
 
-    A stopped set lists the addresses from its sticky IP lease, marked as not running.
+    Each service is listed on the container ports it declares (without a port if it
+    declares none), next to its container's current address. A stopped set lists the same
+    addresses, marked as not running and without container addresses.
     """
     set_name = current_set(ctx, "urls")
     try:
@@ -36,7 +38,7 @@ def urls(
 def render_urls(found: SetUrls) -> str:
     heading = f"set {found.name}: {found.state}"
     if not found.running:
-        heading += " (not running; addresses from its sticky IP lease)"
+        heading += " (not running)"
     lines = [heading]
     if found.web:
         lines += ["", _table(["WEB", "IP"], [[w.url, _ip(w.ip)] for w in found.web])]

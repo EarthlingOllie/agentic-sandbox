@@ -1,5 +1,5 @@
-"""`sandbox SET prune` and bare `sandbox prune`: clear container infrastructure, hosts
-blocks and IP leases; never the agent's clones (fake Compose and Docker)."""
+"""`sandbox SET prune` and bare `sandbox prune`: clear container infrastructure; never the
+agent's clones (fake Compose and Docker)."""
 
 import asyncio
 import json
@@ -38,14 +38,6 @@ def up(set_name: str, git: FakeGit, docker: FakeDocker) -> None:
     assert code == 0, out + err
 
 
-def leased_blocks(env: Env) -> dict[str, str]:
-    leases = env.state_dir / "leases.json"
-    if not leases.exists():
-        return {}
-    sets = json.loads(leases.read_text())["sets"]
-    return {name: entry["block"] for name, entry in sets.items()}
-
-
 def states(git: FakeGit, docker: FakeDocker) -> dict[str, str]:
     code, out, err = run(["status", "--json"], git, docker)
     assert code == 0, out + err
@@ -81,29 +73,22 @@ def test_prune_clears_a_stopped_sets_infrastructure_and_keeps_clones_and_plan(
 ) -> None:
     git, docker = FakeGit(), FakeDocker()
     make_repo(env, git)
-    env.hosts_file.write_text("127.0.0.1\tlocalhost\n")
     up("jira-123", git, docker)
     assert run(["jira-123", "down"], git, docker)[0] == 0
-    # A stopped set keeps its sticky lease (and a crash may leave its hosts block behind).
-    assert "jira-123" in leased_blocks(env)
-    env.hosts_file.write_text(
-        "127.0.0.1\tlocalhost\n# sandbox:jira-123\n127.42.0.1\tmysql.jira-123.test\n"
-        "# end sandbox:jira-123\n"
-    )
     docker.compose.calls.clear()
 
     code, out, err = run(["jira-123", "prune"], git, docker)
 
     assert code == 0, out + err
     assert docker.compose.calls == [("down", project_name("jira-123"))]
-    assert leased_blocks(env) == {}
-    assert env.hosts_file.read_text() == "127.0.0.1\tlocalhost\n"
     set_dir = env.set_dir("jira-123")
     assert (set_dir / "sandbox.yaml").is_file()
     assert (set_dir / "api" / ".git").is_dir()
     assert git.clone(set_dir / "api").branch == "agent/jira-123"
     assert "jira-123" in out
     assert "clones kept" in out
+    assert "lease" not in out
+    assert "hosts" not in out
 
 
 def test_prune_refuses_a_running_set(env: Env) -> None:
@@ -119,7 +104,6 @@ def test_prune_refuses_a_running_set(env: Env) -> None:
     assert "running" in err
     assert "sandbox jira-123 down" in err
     assert docker.compose.calls == []
-    assert "jira-123" in leased_blocks(env)
 
 
 def test_prune_refuses_a_partially_running_set(env: Env) -> None:
@@ -132,7 +116,6 @@ def test_prune_refuses_a_partially_running_set(env: Env) -> None:
 
     assert code == 1
     assert "partial" in err
-    assert "jira-123" in leased_blocks(env)
 
 
 def test_prune_of_an_unknown_set_fails(env: Env) -> None:
@@ -143,39 +126,22 @@ def test_prune_of_an_unknown_set_fails(env: Env) -> None:
     assert docker.compose.calls == []
 
 
-def test_after_prune_a_fresh_up_leases_a_new_block(env: Env) -> None:
-    git, docker = FakeGit(), FakeDocker()
-    make_repo(env, git)
-    up("jira-123", git, docker)
-    assert leased_blocks(env)["jira-123"] == "127.42.0.0/24"
-    assert run(["jira-123", "down"], git, docker)[0] == 0
-    assert run(["jira-123", "prune"], git, docker)[0] == 0
-    # The released block goes back to the pool: the next set to lease takes it.
-    up("jira-456", git, docker)
-    assert leased_blocks(env)["jira-456"] == "127.42.0.0/24"
-
-    up("jira-123", git, docker)
-
-    assert leased_blocks(env)["jira-123"] == "127.42.1.0/24"
-    assert "127.42.1.1\tmysql.jira-123.test" in env.hosts_file.read_text()
-
-
 # --- bare sandbox prune --------------------------------------------------------------------
 
 
 def test_bare_prune_clears_every_orphan_and_leaves_real_sets_alone(env: Env) -> None:
     git, docker = FakeGit(), FakeDocker()
     make_repo(env, git)
-    for name in ("alpha", "bravo", "ghost", "leased"):
+    for name in ("alpha", "bravo", "ghost", "gone"):
         up(name, git, docker)
     assert run(["bravo", "down"], git, docker)[0] == 0
-    # ghost: its set directory vanished (containers and lease left behind);
-    # leased: down, then its set directory vanished (only the lease left behind).
-    assert run(["leased", "down"], git, docker)[0] == 0
+    # ghost: its set directory vanished (containers left behind);
+    # gone: down, then its set directory vanished (nothing is left: it is not a set).
+    assert run(["gone", "down"], git, docker)[0] == 0
     # (The fake reads a project's files, so hand ghost's container to the leftovers.)
     docker.compose.running.pop(project_name("ghost"))
     docker.extra.append(Container("ghost", "mysql", "running", None))
-    for name in ("ghost", "leased"):
+    for name in ("ghost", "gone"):
         shutil.rmtree(env.set_dir(name))
     # A leftover container under a set name no project knows about.
     docker.extra.append(Container("crashed", "mysql", "exited", None))
@@ -184,7 +150,6 @@ def test_bare_prune_clears_every_orphan_and_leaves_real_sets_alone(env: Env) -> 
         "bravo": "stopped",
         "crashed": "orphaned",
         "ghost": "orphaned",
-        "leased": "orphaned",
     }
     docker.compose.calls.clear()
 
@@ -192,16 +157,12 @@ def test_bare_prune_clears_every_orphan_and_leaves_real_sets_alone(env: Env) -> 
 
     assert code == 0, out + err
     assert sorted(docker.compose.calls) == [
-        ("down", project_name(name)) for name in ("crashed", "ghost", "leased")
+        ("down", project_name(name)) for name in ("crashed", "ghost")
     ]
-    assert set(leased_blocks(env)) == {"alpha", "bravo"}
-    for name in ("crashed", "ghost", "leased"):
+    for name in ("crashed", "ghost"):
         assert name in out
     assert "alpha" not in out
     assert "bravo" not in out
-    hosts = env.hosts_file.read_text()
-    assert "# sandbox:ghost" not in hosts
-    assert "# sandbox:alpha" in hosts
 
 
 def test_bare_prune_with_no_orphans_says_so(env: Env) -> None:
@@ -234,11 +195,9 @@ def test_one_failing_orphan_does_not_stop_the_rest(env: Env) -> None:
     git = FakeGit()
     compose = SlowCompose()
     docker = FakeDocker(compose)
-    make_repo(env, git)
-    for name in ("orphan-1", "orphan-2", "orphan-3"):
-        up(name, git, docker)
-        assert run([name, "down"], git, docker)[0] == 0
-        shutil.rmtree(env.set_dir(name))
+    docker.extra.extend(
+        Container(name, "mysql", "exited", None) for name in ("orphan-1", "orphan-2", "orphan-3")
+    )
     compose.failing = {project_name("orphan-2")}
 
     code, out, err = run(["prune"], git, docker)
@@ -248,8 +207,6 @@ def test_one_failing_orphan_does_not_stop_the_rest(env: Env) -> None:
     assert "boom" in err
     assert "orphan-1" in out
     assert "orphan-3" in out
-    # The failed set keeps its lease (so a rerun can retry); the others are released.
-    assert set(leased_blocks(env)) == {"orphan-2"}
 
 
 def test_bare_prune_never_touches_clones_of_a_planless_set_dir(env: Env) -> None:
@@ -264,4 +221,3 @@ def test_bare_prune_never_touches_clones_of_a_planless_set_dir(env: Env) -> None
     assert code == 0, out + err
     assert "half" in out
     assert (env.set_dir("half") / "api" / ".git").is_dir()
-    assert "half" not in leased_blocks(env)

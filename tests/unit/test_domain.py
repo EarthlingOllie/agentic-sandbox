@@ -67,15 +67,9 @@ def test_services_answer_to_set_hostnames_under_the_configured_domain(env: Env) 
     assert services(env)["redis"]["networks"] == {
         "default": {"aliases": ["redis", "redis.jira-123.sandbox.test"]}
     }
-    # From the machine: the hosts block and the printed bindings.
-    assert env.hosts_file.read_text() == (
-        "# sandbox:jira-123\n"
-        "127.42.0.1\tmysql.jira-123.sandbox.test\n"
-        "127.42.0.2\tredis.jira-123.sandbox.test\n"
-        "# end sandbox:jira-123\n"
-    )
-    assert "  mysql.jira-123.sandbox.test  127.42.0.1  3306/tcp\n" in result.stdout
-    assert "  redis.jira-123.sandbox.test  127.42.0.2  (no ports)\n" in result.stdout
+    # From the machine: the printed hostnames, on their conventional ports.
+    assert "  mysql.jira-123.sandbox.test  3306/tcp\n" in result.stdout
+    assert "  redis.jira-123.sandbox.test  (no ports)\n" in result.stdout
 
 
 def test_a_web_app_is_served_under_the_configured_domain(env: Env, mkcert: FakeMkcert) -> None:
@@ -93,10 +87,9 @@ def test_a_web_app_is_served_under_the_configured_domain(env: Env, mkcert: FakeM
         "web.jira-123.sandbox.test",
         "admin.jira-123.sandbox.test",
     ]
-    # ...and in the hosts block, on the app's IP (mysql has .1).
-    hosts = env.hosts_file.read_text()
-    assert "127.42.0.2\tweb.jira-123.sandbox.test\n" in hosts
-    assert "127.42.0.2\tadmin.jira-123.sandbox.test\n" in hosts
+    # ...and are printed, each answering on HTTPS and the Vite port.
+    assert "  web.jira-123.sandbox.test  443/tcp, 5173/tcp\n" in result.stdout
+    assert "  admin.jira-123.sandbox.test  443/tcp, 5173/tcp\n" in result.stdout
     # The app is told its own URL and HMR host.
     assert web["environment"] == {
         "WORKTREE": str(env.set_dir("jira-123") / "web"),
@@ -137,6 +130,9 @@ def test_a_certificate_issued_for_another_domain_is_reissued_on_the_next_up(
 def test_status_shows_hostnames_under_the_configured_domain(env: Env) -> None:
     set_domain(env)
     git, docker = FakeGit(), FakeDocker()
+    docker.addresses.update(
+        {("jira-123", "mysql"): "172.20.0.2", ("jira-123", "redis"): "172.20.0.3"}
+    )
     make_repo(env, git, "api", MYSQL_AND_REDIS)
     assert invoke(["jira-123", "up", "--repos", "api"], git, docker.compose, docker).exit_code == 0
 
@@ -149,18 +145,21 @@ def test_status_shows_hostnames_under_the_configured_domain(env: Env) -> None:
     }
     assert hostnames == {
         "agent": (None, None),
-        "mysql": ("mysql.jira-123.sandbox.test", "127.42.0.1"),
-        "redis": ("redis.jira-123.sandbox.test", "127.42.0.2"),
+        "mysql": ("mysql.jira-123.sandbox.test", "172.20.0.2"),
+        "redis": ("redis.jira-123.sandbox.test", "172.20.0.3"),
     }
     assert table.exit_code == 0, table.output
     rows = [line.split() for line in table.stdout.splitlines()]
-    assert ["mysql", "running", "-", "mysql.jira-123.sandbox.test", "127.42.0.1"] in rows
-    assert ["redis", "running", "-", "redis.jira-123.sandbox.test", "127.42.0.2"] in rows
+    assert ["mysql", "running", "-", "mysql.jira-123.sandbox.test", "172.20.0.2"] in rows
+    assert ["redis", "running", "-", "redis.jira-123.sandbox.test", "172.20.0.3"] in rows
 
 
 def test_urls_lists_addresses_under_the_configured_domain(env: Env, mkcert: FakeMkcert) -> None:
     set_domain(env)
     git, docker = FakeGit(), FakeDocker()
+    docker.addresses.update(
+        {("jira-123", "mysql"): "172.20.0.2", ("jira-123", "web"): "172.20.0.3"}
+    )
     make_repo(env, git, "web", APP)
     up = invoke(["jira-123", "up", "--repos", "web"], git, docker.compose, docker, mkcert)
     assert up.exit_code == 0, up.output
@@ -171,16 +170,16 @@ def test_urls_lists_addresses_under_the_configured_domain(env: Env, mkcert: Fake
     assert as_json.exit_code == 0, as_json.output
     listing = json.loads(as_json.stdout)
     assert listing["web"] == [
-        {"url": "https://web.jira-123.sandbox.test", "service": "web", "ip": "127.42.0.2"},
-        {"url": "https://admin.jira-123.sandbox.test", "service": "web", "ip": "127.42.0.2"},
-        {"url": "https://web.jira-123.sandbox.test:5173", "service": "web", "ip": "127.42.0.2"},
+        {"url": "https://web.jira-123.sandbox.test", "service": "web", "ip": "172.20.0.3"},
+        {"url": "https://admin.jira-123.sandbox.test", "service": "web", "ip": "172.20.0.3"},
+        {"url": "https://web.jira-123.sandbox.test:5173", "service": "web", "ip": "172.20.0.3"},
     ]
     assert listing["services"] == [
-        {"address": "mysql.jira-123.sandbox.test:3306", "service": "mysql", "ip": "127.42.0.1"},
+        {"address": "mysql.jira-123.sandbox.test:3306", "service": "mysql", "ip": "172.20.0.2"},
     ]
     assert table.exit_code == 0, table.output
     rows = [line.split() for line in table.stdout.splitlines()]
-    assert ["https://web.jira-123.sandbox.test", "127.42.0.2"] in rows
-    assert ["https://admin.jira-123.sandbox.test", "127.42.0.2"] in rows
-    assert ["https://web.jira-123.sandbox.test:5173", "127.42.0.2"] in rows
-    assert ["mysql.jira-123.sandbox.test:3306", "127.42.0.1"] in rows
+    assert ["https://web.jira-123.sandbox.test", "172.20.0.3"] in rows
+    assert ["https://admin.jira-123.sandbox.test", "172.20.0.3"] in rows
+    assert ["https://web.jira-123.sandbox.test:5173", "172.20.0.3"] in rows
+    assert ["mysql.jira-123.sandbox.test:3306", "172.20.0.2"] in rows

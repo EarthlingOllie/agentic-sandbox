@@ -1,29 +1,29 @@
-"""``prune``: clear a set's container infrastructure and give its IP lease back to the pool.
+"""``prune``: clear a set's container infrastructure.
 
 Pruning a set detaches the resolver from it (``sandbox.resolver``; the resolver keeps
-running for other sets), then removes its Compose project (containers, network, volumes),
-its hosts block and its lease. The set directory, plan and the agent's clones are never
+running for other sets), then removes its Compose project (containers, network, volumes).
+Nothing else describes where a set is: no IP is leased and no hosts block is written. The
+set directory, plan and the agent's clones are never
 touched: ``destroy`` removes those. A set with a plan and anything running is refused
 (``down`` it first).
 
 Bare ``prune`` asks the status reconciliation (``sandbox.status``) for every orphaned set
-(containers or a lease left behind without a plan, e.g. by a crash) and prunes each,
-concurrently under :data:`MAX_CONCURRENT` and independently: one failure is reported and
-the rest carry on. A set whose pruning failed keeps its lease, so a rerun retries it.
+(containers left behind without a plan, e.g. by a crash) and prunes each, concurrently
+under :data:`MAX_CONCURRENT` and independently: one failure is reported and the rest carry
+on. A set whose pruning failed keeps its containers, so a rerun retries it.
 """
 
 import asyncio
 from dataclasses import dataclass
 from typing import Final
 
-from sandbox.bindings import lease_store, up_lock_path
+from sandbox.bindings import up_lock_path
 from sandbox.compose import project_name
 from sandbox.compose.cli import Compose
 from sandbox.config import Config
 from sandbox.docker import Docker
 from sandbox.errors import SandboxError
 from sandbox.git import Git
-from sandbox.hosts import HostsWriter, hosts_writer
 from sandbox.locking import try_file_lock
 from sandbox.models.status import SetStateName, SetSummary
 from sandbox.names import validate_set_name
@@ -55,18 +55,10 @@ class PruneReport:
 
 
 class Pruner:
-    def __init__(
-        self,
-        config: Config,
-        git: Git,
-        compose: Compose,
-        docker: Docker,
-        hosts: HostsWriter | None = None,
-    ) -> None:
+    def __init__(self, config: Config, git: Git, compose: Compose, docker: Docker) -> None:
         self._config = config
         self._compose = compose
         self._docker = docker
-        self._hosts = hosts if hosts is not None else hosts_writer(config)
         self._status = StatusReader(config, git, docker)
 
     async def prune_set(self, set_name: str) -> Pruned:
@@ -93,8 +85,8 @@ class Pruner:
 
         async def one(set_name: str) -> Pruned | PruneFailure | None:
             async with limit, try_file_lock(up_lock_path(self._config, set_name)) as held:
-                # An `up` of the set is running (a new set has a lease before its plan), or
-                # one finished since the listing and wrote the plan: not an orphan.
+                # An `up` of the set is running, or one finished since the listing and wrote
+                # the plan: not an orphan.
                 if not held or plan_path(self._config.sets_root / set_name).exists():
                     return None
                 try:
@@ -113,11 +105,7 @@ class Pruner:
         return next((s for s in listing.sets if s.name == set_name), None)
 
     async def _clear(self, set_name: str) -> Pruned:
-        # Lease last: if anything before it fails, the set stays visible to `status`
-        # (and to the next bare `prune`) through its lease.
         project = project_name(set_name)
         await detach(self._docker, set_name)
         await self._compose.down(project)
-        await self._hosts.remove(set_name)
-        await lease_store(self._config).release(set_name)
         return Pruned(set_name, project)

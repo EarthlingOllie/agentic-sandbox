@@ -2,11 +2,9 @@
 
 from pathlib import Path
 
-import yaml
-
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
-from tests.fakes_compose import FakeCompose
+from tests.fakes_compose import FakeCompose, load_compose_yaml
 
 MYSQL = """\
 services:
@@ -47,12 +45,13 @@ def test_override_labels_every_resource_with_the_set_name(env: Env) -> None:
 
     assert invoke(["jira-123", "up", "--repos", "api"], git, FakeCompose()).exit_code == 0
 
-    override = yaml.safe_load((env.set_dir("jira-123") / "override.yaml").read_text())
+    override = load_compose_yaml(env.set_dir("jira-123") / "override.yaml")
     label = {"sandbox.set": "jira-123"}
     # The agent service (tested in test_agent.py) carries the label too.
     assert override["services"].pop("agent")["labels"] == label
-    # Network aliases are tested in test_up_network.py.
+    # Network aliases and the reset ports are tested in test_up_network.py.
     override["services"]["mysql"].pop("networks")
+    override["services"]["mysql"].pop("ports")
     assert override == {
         "name": "sandbox-jira-123",
         "services": {"mysql": {"labels": label}},

@@ -10,7 +10,6 @@ under ``sandbox.compose`` and one line to ``FRAGMENTS``.
 import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -40,8 +39,6 @@ class OverrideContext:
     sources: Mapping[str, Path] = field(default_factory=dict[str, Path])
     # The plan's agent override, if any (see sandbox.compose.agent).
     agent: Mapping[str, Any] | None = None
-    # Service name -> its leased loopback IP (see sandbox.leases).
-    ips: Mapping[str, IPv4Address] = field(default_factory=dict[str, IPv4Address])
     # The repos' web apps, the mkcert CA certificate and the set's TLS directory
     # (see sandbox.web; both paths None without a web app).
     web_apps: Sequence[WebApp] = ()
@@ -70,9 +67,7 @@ def _agent(ctx: OverrideContext) -> dict[str, Any]:
 
 def _network(ctx: OverrideContext) -> dict[str, Any]:
     definitions = {name: s.definition for name, s in ctx.graph.services.items()}
-    return network_fragment(
-        ctx.set_name, ctx.domain, definitions, ctx.ips, extra_hostnames(ctx.web_apps)
-    )
+    return network_fragment(ctx.set_name, ctx.domain, definitions, extra_hostnames(ctx.web_apps))
 
 
 def _init_hooks(ctx: OverrideContext) -> dict[str, Any]:
@@ -82,7 +77,7 @@ def _init_hooks(ctx: OverrideContext) -> dict[str, Any]:
 def _web(ctx: OverrideContext) -> dict[str, Any]:
     definitions = {name: s.definition for name, s in ctx.graph.services.items()}
     return web_fragment(
-        ctx.web_apps, definitions, ctx.ips, ctx.root_ca, ctx.tls_dir, extra_services(ctx.agent)
+        ctx.web_apps, definitions, ctx.root_ca, ctx.tls_dir, extra_services(ctx.agent)
     )
 
 

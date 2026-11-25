@@ -15,7 +15,7 @@ class SetStateName(StrEnum):
     RUNNING = "running"  # every service (and the agent) running
     STOPPED = "stopped"  # a plan, nothing running
     PARTIAL = "partial"  # a plan, some but not all services running
-    ORPHANED = "orphaned"  # containers or a lease without a set plan, or a plan-less set dir
+    ORPHANED = "orphaned"  # containers without a set plan, or a plan-less set directory
 
 
 class _Model(BaseModel):
@@ -38,8 +38,11 @@ class ServiceStatus(_Model):
     # Docker's container state (running, exited, ...), or "missing" without a container.
     state: str
     health: str | None
-    hostname: str | None
-    ip: IPv4Address | None
+    # The set hostname: the service's stable address, running or not.
+    hostname: str | None = None
+    # The container's current address, read from Docker; absent unless it is running. It
+    # changes between `up`s: connect to the hostname.
+    ip: IPv4Address | None = None
 
 
 class RepoStatus(_Model):

@@ -165,49 +165,18 @@ def test_on_macos_up_fails_when_the_job_is_installed_but_no_alias_exists(
     assert_nothing_created(env, compose)
 
 
-def test_on_macos_a_set_leases_inside_the_alias_pool(env: Env, root: Path) -> None:
-    host, _ = macos(root, "127.42.0.0/24", "127.42.1.0/24")
+def test_on_macos_a_set_comes_up_with_the_alias_pool_installed(env: Env, root: Path) -> None:
+    host, _ = macos(root, "127.42.0.0/24")
     git, compose = FakeGit(), FakeCompose()
     make_repo(env, git)
 
-    first = invoke(["a", "up", "--repos", "api"], git, compose, host=host)
-    second = invoke(["b", "up", "--repos", "api"], git, compose, host=host)
+    # More sets than aliased blocks: nothing is leased, so the pool's size limits nothing.
+    results = [
+        invoke([name, "up", "--repos", "api"], git, compose, host=host) for name in ("a", "b", "c")
+    ]
 
-    assert first.exit_code == 0, first.output
-    assert second.exit_code == 0, second.output
-    assert "mysql.b.test  127.42.1.1" in second.output
-
-
-def test_on_macos_up_fails_clearly_when_every_alias_block_is_leased(env: Env, root: Path) -> None:
-    host, _ = macos(root, "127.42.0.0/24", "127.42.1.0/24")
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
-    for name in ("a", "b"):
-        assert invoke([name, "up", "--repos", "api"], git, compose, host=host).exit_code == 0
-
-    result = invoke(["c", "up", "--repos", "api"], git, compose, host=host)
-
-    assert result.exit_code == 1
-    assert "all 2 loopback alias blocks" in result.output
-    assert "sudo sandbox setup --sets" in result.output
-    assert not env.set_dir("c").exists()
-
-
-def test_on_macos_a_set_whose_block_lost_its_aliases_fails(env: Env, root: Path) -> None:
-    """Setup rerun with a smaller --sets leaves an existing lease outside the pool."""
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
-    wide, _ = macos(root, "127.42.0.0/24", "127.42.1.0/24")
-    for name in ("a", "b"):
-        assert invoke([name, "up", "--repos", "api"], git, compose, host=wide).exit_code == 0
-    assert invoke(["b", "down"], git, compose).exit_code == 0
-    narrow, _ = macos(root, "127.42.0.0/24")
-
-    result = invoke(["b", "up"], git, compose, host=narrow)
-
-    assert result.exit_code == 1
-    assert "127.42.1.0/24 has no lo0 aliases" in result.output
-    assert "sudo sandbox setup --sets 2" in result.output
+    assert [result.exit_code for result in results] == [0, 0, 0], results[-1].output
+    assert "mysql.c.test" in results[-1].output
 
 
 def test_on_linux_up_reads_no_loopback_state(env: Env, root: Path) -> None:

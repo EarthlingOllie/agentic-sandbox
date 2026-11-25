@@ -5,11 +5,13 @@ Compose goes through :func:`unique_set`. Compose derives the project, container,
 volume names from it, so test runs from several worktrees (or an aborted earlier run's
 leftovers) never share a project. Set ``SANDBOX_TEST_RUN_ID`` to pin the prefix.
 
-Published ports are global to the host too: every service binds ``<leased IP>:<native
-port>``. So each run claims a loopback /16 of its own (:func:`run_ip_pool`) and every test
-gets a /20 of it as its ``ip_pool`` (:func:`ip_pool`), never the default 127.42.0.0/16 that
-real sets lease from. See :mod:`tests.ip_pools` for the claim. Set ``SANDBOX_TEST_IP_POOL``
-to pin the run's pool instead.
+Sets publish nothing on the host, so two runs never meet on a port: a service is reached
+at its container's own address (:func:`container_address`), which is also what the resolver
+answers for its set hostname (:func:`resolve`, asking the resolver directly: pointing the
+operating system at it is ``setup``'s job).
+
+Only the macOS alias test of ``setup`` still needs a loopback pool of its own
+(:func:`ip_pool`, see :mod:`tests.ip_pools`; ``SANDBOX_TEST_IP_POOL`` pins it).
 
 The resolver is global to the host as well, and deliberately shared: every test's sets are
 attached to the one resolver, as real sets are. Tests clean up with a plain ``docker compose
@@ -31,9 +33,15 @@ from pathlib import Path
 import pytest
 
 from sandbox.compose import project_name
-from sandbox.compose.resolver import RESOLVER_CONTAINER
+from sandbox.compose.resolver import (
+    RESOLVER_ADDRESS,
+    RESOLVER_CONTAINER,
+    RESOLVER_PORT,
+    set_network,
+)
 from sandbox.names import validate_set_name
 from tests.conftest import Env
+from tests.dns import lookup
 from tests.ip_pools import claim_run_pool
 
 if shutil.which("git") is None:
@@ -41,7 +49,7 @@ if shutil.which("git") is None:
 
 RUN_ID = os.environ.get("SANDBOX_TEST_RUN_ID") or secrets.token_hex(4)
 
-TEST_POOL_PREFIX = 20  # 16 /24 blocks per test; a test's sets lease from its own /20
+TEST_POOL_PREFIX = 20  # 16 /24 blocks per test
 
 
 @pytest.fixture(scope="session")
@@ -61,9 +69,9 @@ def run_ip_pool() -> Iterator[IPv4Network]:
 _test_pools = itertools.count()
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def ip_pool(env: Env, run_ip_pool: IPv4Network) -> IPv4Network:
-    """The pool this test's sets lease from: the next /20 of the run's /16, in its config."""
+    """A loopback pool of this test's own: the next /20 of the run's /16, in its config."""
     blocks = list(run_ip_pool.subnets(new_prefix=TEST_POOL_PREFIX))
     pool = blocks[next(_test_pools) % len(blocks)]
     with env.config_file.open("a") as config:
@@ -71,9 +79,33 @@ def ip_pool(env: Env, run_ip_pool: IPv4Network) -> IPv4Network:
     return pool
 
 
-def ip_in_block(pool: IPv4Network, block: int, host: int) -> str:
-    """The address ``host`` of the pool's ``block``-th /24 (what the lease hands out)."""
-    return str(pool.network_address + block * 256 + host)
+def container_address(set_name: str, service: str) -> str:
+    """The address Docker gave the service's container on the set's network."""
+    template = f'{{{{(index .NetworkSettings.Networks "{set_network(set_name)}").IPAddress}}}}'
+    address = subprocess.run(
+        ["docker", "container", "inspect", "--format", template,
+         f"{project_name(set_name)}-{service}-1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()  # fmt: skip
+    assert address, f"{service} of {set_name} has no address on the set network"
+    return address
+
+
+def published_ports(set_name: str, service: str) -> str:
+    """What ``docker port`` lists for the service's container: empty when nothing is published."""
+    return subprocess.run(
+        ["docker", "port", f"{project_name(set_name)}-{service}-1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def resolve(hostname: str) -> tuple[str, ...]:
+    """The addresses the resolver answers for ``hostname`` (asked directly, not via the OS)."""
+    return lookup(hostname, RESOLVER_ADDRESS, RESOLVER_PORT).addresses
 
 
 def unique_set(base: str) -> str:

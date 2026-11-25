@@ -180,7 +180,7 @@ def up(
         status = "running" if result.action is UpAction.NOOP else "healthy"
         typer.echo(f"  services: {', '.join(result.services)} {status} [{result.project}]")
         if result.bindings:
-            typer.echo("  bindings:")
+            typer.echo("  hostnames:")
             for line in format_bindings(result.bindings):
                 typer.echo(f"    {line}")
     else:

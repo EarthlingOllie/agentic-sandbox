@@ -1,16 +1,18 @@
-"""A set's host-resolvable addresses, for ``urls``: web apps as ``https://`` URLs, backing
-services as ``host:port``, each with its loopback IP.
+"""A set's addresses, for ``urls``: web apps as ``https://`` URLs, backing services as
+``host:port`` on their conventional ports.
 
-Everything comes from the set's plan, its repos' compose files (normalised and merged the
-way ``up`` merges them, ``sandbox.compose.dedup``) and its sticky lease (``sandbox.leases``),
-so a stopped set lists the same addresses it will have when it is brought back up. Docker
-is asked only whether the set is running.
+The hostnames and ports come from the set's plan and its repos' compose files (normalised
+and merged the way ``up`` merges them, ``sandbox.compose.dedup``): a service is listed once
+per container port it declares, whatever host-side binding the repo wrote next to it, and
+without a port when it declares none. So a stopped set lists the same addresses it will
+have when it is brought back up. Docker is asked whether the set is running and where each
+running container is: that address is shown next to the hostname and is absent otherwise.
 """
 
+from collections.abc import Mapping
 from ipaddress import IPv4Address
 
 from sandbox.agent import load_plan
-from sandbox.bindings import lease_store
 from sandbox.compose import project_name
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import ServiceGraph
@@ -21,7 +23,6 @@ from sandbox.compose.web import WebApp
 from sandbox.config import Config
 from sandbox.docker import Docker
 from sandbox.git import Git
-from sandbox.leases import SetLease
 from sandbox.models.status import SetStateName
 from sandbox.models.urls import ServiceAddress, SetUrls, WebUrl
 from sandbox.names import validate_set_name
@@ -45,33 +46,20 @@ class UrlsReader:
         graph = await resolve_services(self._compose, project_name(set_name), repos)
         domain = self._config.domain
         apps = web_apps(set_name, domain, set_dir, repos)
-        lease = lease_store(self._config).read(set_name)
-        state = await self._state(set_name)
+        reader = StatusReader(self._config, self._git, self._docker)
+        state, addresses = await reader.addresses(set_name)
         return SetUrls(
             name=set_name,
             state=state,
             running=state is SetStateName.RUNNING,
-            web=[url for app in apps for url in _web_urls(app, lease)],
+            web=[url for app in apps for url in _web_urls(app, addresses.get(app.service))],
             services=_service_addresses(
-                set_name, domain, graph, {app.service for app in apps}, lease
+                set_name, domain, graph, {app.service for app in apps}, addresses
             ),
         )
 
-    async def _state(self, set_name: str) -> SetStateName:
-        listing = await StatusReader(self._config, self._git, self._docker).list_sets()
-        for entry in listing.sets:
-            if entry.name == set_name:
-                return entry.state
-        # The plan exists, so the set is listed; a plan deleted since reads as stopped.
-        return SetStateName.STOPPED
 
-
-def _ip(lease: SetLease | None, host: str) -> IPv4Address | None:
-    return lease.ips.get(host) if lease is not None else None
-
-
-def _web_urls(app: WebApp, lease: SetLease | None) -> list[WebUrl]:
-    ip = _ip(lease, app.hostname)
+def _web_urls(app: WebApp, ip: IPv4Address | None) -> list[WebUrl]:
     found = [WebUrl(url=f"https://{host}", service=app.service, ip=ip) for host in app.hostnames]
     if app.vite is not None:
         found.append(WebUrl(url=f"{app.url}:{app.vite}", service=app.service, ip=ip))
@@ -83,14 +71,14 @@ def _service_addresses(
     domain: str,
     graph: ServiceGraph,
     web_services: set[str],
-    lease: SetLease | None,
+    addresses: Mapping[str, IPv4Address],
 ) -> list[ServiceAddress]:
     found: list[ServiceAddress] = []
     for name in graph.names():
         if name in web_services:
             continue
         host = hostname(name, set_name, domain)
-        ip = _ip(lease, host)
+        ip = addresses.get(name)
         ports = container_ports(name, graph.services[name].definition)
         for address in [_address(host, port) for port in ports] or [host]:
             found.append(ServiceAddress(address=address, service=name, ip=ip))

@@ -3,18 +3,19 @@
 A web app is a repo's service marked ``x-sandbox: {web: true}`` and named after the repo.
 Its service gets:
 
-- port 443 published on its own leased IP (its hostname ``<repo>.<set>.<domain>`` is the
-  service's set hostname, so ``sandbox.compose.network`` already aliases it);
+- nothing published: the app listens on 443 at its container's own address, and its hostname
+  ``<repo>.<set>.<domain>`` is the service's set hostname, so ``sandbox.compose.network``
+  already aliases it;
 - ``net.ipv4.ip_unprivileged_port_start=0``, so the app listens on 443 as non-root;
 - the set's leaf certificate read-only at ``/sandbox/tls/`` (``cert.pem``, ``key.pem``);
 - ``WORKTREE`` (its repo's checkout in the set directory: the agent's clone) and
   ``APP_URL`` (``https://<hostname>``) in its environment, and nothing else;
 - with ``hosts: [admin, portal]``, the extra hostnames ``admin.<set>.<domain>`` and
-  ``portal.<set>.<domain>`` on the same container and IP: ``sandbox.compose.network`` aliases
-  them (from :func:`extra_hostnames`), the hosts block lists them, and the set's
+  ``portal.<set>.<domain>`` on the same container: ``sandbox.compose.network`` aliases them
+  (from :func:`extra_hostnames`), so the resolver answers them, and the set's
   ``*.<set>.<domain>`` certificate covers them (each is one label deep);
-- with ``vite: 5173``, that port published on its IP too, and ``VITE_HMR_HOST`` (its
-  hostname) in its environment for the app's ``server.hmr.host``.
+- with ``vite: 5173``, ``VITE_HMR_HOST`` (its hostname) in its environment for the app's
+  ``server.hmr.host``; the dev server is reached on that port at the same hostname.
 
 When the set has a web app, every service also gets the machine CA's ``rootCA.pem``
 read-only at ``/sandbox/ca/rootCA.pem`` (the agent gets it from ``sandbox.compose.agent``),
@@ -23,11 +24,10 @@ never the CA key.
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Any, Final
 
-from sandbox.compose.network import ContainerPort, container_ports, hostname
+from sandbox.compose.network import ContainerPort, hostname
 
 CA_TARGET: Final = "/sandbox/ca/rootCA.pem"
 TLS_TARGET: Final = "/sandbox/tls"
@@ -45,9 +45,9 @@ class WebApp:
     domain: str
     # The repo's checkout in the set directory (the agent's clone).
     worktree: Path
-    # Extra one-label hosts (``admin`` -> ``admin.<set>.<domain>``) on the same container and IP.
+    # Extra one-label hosts (``admin`` -> ``admin.<set>.<domain>``) on the same container.
     hosts: tuple[str, ...] = ()
-    # The Vite dev server's port, if any: published on the app's IP, HMR host set.
+    # The Vite dev server's port, if any: the HMR host is set to the app's hostname.
     vite: int | None = None
 
     @property
@@ -67,6 +67,11 @@ class WebApp:
     def url(self) -> str:
         return f"https://{self.hostname}"
 
+    @property
+    def ports(self) -> tuple[ContainerPort, ...]:
+        """What the app listens on by contract: HTTPS, and its Vite dev server if any."""
+        return (HTTPS_PORT, *([ContainerPort(self.vite)] if self.vite is not None else []))
+
 
 def extra_hostnames(web_apps: Sequence[WebApp]) -> dict[str, tuple[str, ...]]:
     """Web service name -> its extra hostnames (only apps that declare some)."""
@@ -80,7 +85,6 @@ def read_only_bind(source: Path, target: str) -> dict[str, Any]:
 def web_fragment(
     web_apps: Sequence[WebApp],
     definitions: Mapping[str, Mapping[str, Any]],
-    ips: Mapping[str, IPv4Address],
     root_ca: Path | None,
     tls_dir: Path | None,
     other_services: Iterable[str] = (),
@@ -102,11 +106,4 @@ def web_fragment(
         service["environment"] = environment
         if tls_dir is not None:
             service["volumes"].append(read_only_bind(tls_dir, TLS_TARGET))
-        ip = ips.get(app.service)
-        declared = container_ports(app.service, definitions.get(app.service, {}))
-        wanted = [HTTPS_PORT, *([ContainerPort(app.vite)] if app.vite is not None else [])]
-        ports = [f"{ip}:{p.port}:{p.port}/{p.protocol}" for p in wanted if p not in declared]
-        if ip is not None and ports:
-            # Appended to the IP-bound ports sandbox.compose.network restates (if any).
-            service["ports"] = ports
     return {"services": services}

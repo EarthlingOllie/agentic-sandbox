@@ -70,33 +70,35 @@ def up(env: Env, git: FakeGit, compose: FakeCompose, mkcert: FakeMkcert, *repos:
     return result.output
 
 
-def test_web_app_publishes_443_on_its_own_ip_and_listens_unprivileged(
+def test_web_app_publishes_nothing_and_listens_on_443_unprivileged(
     env: Env, mkcert: FakeMkcert
 ) -> None:
     git = FakeGit()
     make_repo(env, git, "web", WEB_AND_MYSQL)
 
-    up(env, git, FakeCompose(), mkcert, "web")
+    output = up(env, git, FakeCompose(), mkcert, "web")
 
     web = services(env)["web"]
-    # web.jira-123.test is the service's set hostname with its own leased IP (mysql gets .1).
-    assert web["ports"] == ["127.42.0.2:8000:8000/tcp", "127.42.0.2:443:443/tcp"]
+    # Nothing is published, the repo's own 8000 included: the app answers on 443 at its
+    # container's address, which is what its set hostname resolves to.
+    assert web["ports"] == []
     assert "web.jira-123.test" in web["networks"]["default"]["aliases"]
     assert web["sysctls"] == {"net.ipv4.ip_unprivileged_port_start": 0}
     # Only web apps listen on privileged ports.
     assert "sysctls" not in services(env)["mysql"]
-    assert "web.jira-123.test" in env.hosts_file.read_text()
+    assert "  web.jira-123.test  8000/tcp, 443/tcp\n" in output
 
 
-def test_a_declared_443_is_not_published_twice(env: Env, mkcert: FakeMkcert) -> None:
+def test_a_declared_443_is_reset_like_any_other_binding(env: Env, mkcert: FakeMkcert) -> None:
     git = FakeGit()
     make_repo(
         env, git, "web", WEB.replace("    x-sandbox:", '    ports: ["443:443"]\n    x-sandbox:')
     )
 
-    up(env, git, FakeCompose(), mkcert, "web")
+    output = up(env, git, FakeCompose(), mkcert, "web")
 
-    assert services(env)["web"]["ports"] == ["127.42.0.1:443:443/tcp"]
+    assert services(env)["web"]["ports"] == []
+    assert "  web.jira-123.test  443/tcp\n" in output
 
 
 def test_only_worktree_and_app_url_are_injected(env: Env, mkcert: FakeMkcert) -> None:

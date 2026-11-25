@@ -8,8 +8,6 @@ creating a database is covered by ``tests/integration/test_init_hooks.py``.
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from sandbox.compose.dedup import merge
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
@@ -41,7 +39,7 @@ def make_repo(
 
 
 def override(env: Env) -> dict[str, Any]:
-    return yaml.safe_load((env.set_dir("jira-123") / "override.yaml").read_text())
+    return load_compose_yaml(env.set_dir("jira-123") / "override.yaml")
 
 
 def mysql_volumes(env: Env) -> list[Any]:

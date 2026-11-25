@@ -2,7 +2,9 @@
 
 By default it reports the containers a :class:`~tests.fakes_compose.FakeCompose` is
 running: one per service of each project's files, labelled with the set, ``exited`` when
-the test stopped it. Tests add leftovers (orphans) and health through its fields.
+the test stopped it. Tests add leftovers (orphans), health and the addresses Docker gave
+the containers through its fields; like Docker, it reports an address only for a running
+container.
 
 The resolver is a domain (while it runs) and the set of networks it is attached to. The
 networks live on the Compose fake, whose `down` refuses to remove a network the resolver is
@@ -11,6 +13,7 @@ still on, as Docker does.
 
 import shutil
 from dataclasses import dataclass, field
+from ipaddress import IPv4Address
 from pathlib import Path
 
 from sandbox.compose import PROJECT_PREFIX
@@ -25,6 +28,8 @@ class FakeDocker:
     extra: list[Container] = field(default_factory=list[Container])
     # (set, service) -> health status reported for that service's running container
     health: dict[tuple[str, str], str] = field(default_factory=dict[tuple[str, str], str])
+    # (set, service) -> the address of that service's container on the set network
+    addresses: dict[tuple[str, str], str] = field(default_factory=dict[tuple[str, str], str])
     # The directories `empty_as_root` emptied, in call order.
     emptied: list[Path] = field(default_factory=list[Path])
     # The domain the running resolver forwards; None while it is not running.
@@ -64,8 +69,14 @@ class FakeDocker:
                 services.update(load_compose_yaml(path).get("services") or {})
             for service in sorted(services):
                 state = "exited" if service in stopped else "running"
-                health = self.health.get((set_name, service)) if state == "running" else None
-                found.append(Container(set_name, service, state, health))
+                running = state == "running"
+                health = self.health.get((set_name, service)) if running else None
+                address = self.addresses.get((set_name, service)) if running else None
+                found.append(
+                    Container(
+                        set_name, service, state, health, IPv4Address(address) if address else None
+                    )
+                )
         return [*found, *self.extra]
 
     async def empty_as_root(self, path: Path) -> None:

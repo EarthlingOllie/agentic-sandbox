@@ -18,7 +18,7 @@ from sandbox.cli import app
 from sandbox.context import Deps
 from tests.conftest import Env
 from tests.fakes import FakeGit
-from tests.fakes_compose import FakeCompose
+from tests.fakes_compose import FakeCompose, load_compose_yaml
 from tests.fakes_docker import FakeDocker
 from tests.fakes_images import FakeImageProbe
 
@@ -56,7 +56,7 @@ class Harness:
         return self.invoke(SET, "up", *args)
 
     def override(self) -> dict[str, Any]:
-        return yaml.safe_load((self.env.set_dir(SET) / "override.yaml").read_text())
+        return load_compose_yaml(self.env.set_dir(SET) / "override.yaml")
 
     def agent(self) -> dict[str, Any]:
         return self.override()["services"]["agent"]

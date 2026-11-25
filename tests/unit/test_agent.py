@@ -4,11 +4,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
-from tests.fakes_compose import FakeCompose
+from tests.fakes_compose import FakeCompose, load_compose_yaml
 
 MYSQL = "services:\n  mysql:\n    image: mysql:8.4\n"
 
@@ -28,7 +27,7 @@ def up(env: Env, *repos: str, compose: FakeCompose | None = None) -> dict[str, A
         make_repo(env, git, repo, MYSQL if repo == "api" else None)
     result = invoke(["jira-123", "up", "--repos", *repos], git, compose or FakeCompose())
     assert result.exit_code == 0, result.output
-    override = yaml.safe_load((env.set_dir("jira-123") / "override.yaml").read_text())
+    override = load_compose_yaml(env.set_dir("jira-123") / "override.yaml")
     return override["services"]["agent"]
 
 
@@ -152,4 +151,4 @@ def test_up_does_not_follow_a_symlink_the_agent_planted_at_the_override_temp_fil
     assert result.exit_code == 0, result.output
     assert victim.read_text() == "ssh-ed25519 AAAA developer\n"
     assert not (set_dir / "override.yaml").is_symlink()
-    assert "agent" in yaml.safe_load((set_dir / "override.yaml").read_text())["services"]
+    assert "agent" in load_compose_yaml(set_dir / "override.yaml")["services"]

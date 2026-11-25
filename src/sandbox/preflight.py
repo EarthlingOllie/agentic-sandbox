@@ -1,15 +1,15 @@
 """Prerequisite checks: ``up`` fails before creating anything if setup has not been run.
 
-The ``prerequisites`` validation step runs before the set leases IPs (the first thing ``up``
-writes) and checks what ``sudo sandbox setup`` (``sandbox.setup``) installs, naming each
-missing piece:
+The ``prerequisites`` validation step checks what ``sudo sandbox setup`` (``sandbox.setup``)
+installs, naming each missing piece. ``up`` itself no longer uses either piece (it leases no
+IP and writes no hosts block); the checks stay until they are replaced by the resolver's
+own prerequisites:
 
 - the hosts helper and its NOPASSWD sudoers rule, when the hosts block goes into
   ``/etc/hosts`` (``hosts_file`` unset in the config). ``sudo -n -l HELPER`` asks sudo
   itself whether the rule lets this user run the helper without a password;
-- on macOS, the ``lo0`` alias pool: the launchd job, and how many of the pool's /24 blocks
-  are aliased right now. Only those blocks are leased, so when they are all taken ``up``
-  fails asking for a larger ``--sets``. Linux needs no aliases (127.0.0.0/8 is local).
+- on macOS, the ``lo0`` alias pool: the launchd job, and at least one of the pool's /24
+  blocks aliased right now. Linux needs no aliases (127.0.0.0/8 is local).
 
 The mkcert CA (``rootCA.pem``) is checked by the ``web-apps`` step, for sets that serve
 HTTPS (``sandbox.web``). Sets without services need none of this.
@@ -18,7 +18,6 @@ HTTPS (``sandbox.web``). Sets without services need none of this.
 import re
 from ipaddress import IPv4Address, IPv4Network
 
-from sandbox.bindings import lease_store
 from sandbox.errors import SandboxError
 from sandbox.hosts_block import HELPER_PATH
 from sandbox.leases import BLOCK_PREFIX
@@ -40,7 +39,7 @@ async def check_prerequisites(ctx: UpContext) -> None:
             problems.append(problem)
     if ctx.host.is_macos:
         try:
-            ctx.alias_blocks = await _alias_pool(ctx)
+            await _alias_pool(ctx)
         except SandboxError as exc:
             problems.append(str(exc))
     if problems:
@@ -77,7 +76,7 @@ def aliased_blocks(pool: IPv4Network, aliased: set[IPv4Address]) -> int:
     return count
 
 
-async def _alias_pool(ctx: UpContext) -> int:
+async def _alias_pool(ctx: UpContext) -> None:
     pool = ctx.config.ip_pool
     if not ctx.host.path(LAUNCHD_PLIST).is_file():
         raise SandboxError(
@@ -91,12 +90,3 @@ async def _alias_pool(ctx: UpContext) -> int:
             f"aliases in {pool} (the job adds them at boot); run `{SETUP_COMMAND}` to add "
             "them now"
         )
-    lease = lease_store(ctx.config).read(ctx.set_name)
-    blocks = list(pool.subnets(new_prefix=BLOCK_PREFIX))
-    if lease is not None and lease.block in blocks and blocks.index(lease.block) >= count:
-        raise SandboxError(
-            f"set {ctx.set_name!r}'s block {lease.block} has no lo0 aliases (the pool covers "
-            f"{blocks[0]} to {blocks[count - 1]}); rerun "
-            f"`{SETUP_COMMAND} --sets {blocks.index(lease.block) + 1}` or larger"
-        )
-    return count

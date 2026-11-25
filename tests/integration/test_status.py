@@ -4,7 +4,6 @@ import json
 import shutil
 import subprocess
 from collections.abc import Iterator
-from ipaddress import IPv4Network
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,7 @@ from sandbox.compose.cli import SubprocessCompose
 from sandbox.docker import SubprocessDocker
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git, ip_in_block, unique_set
+from tests.integration.conftest import container_address, git, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -57,9 +56,7 @@ def listed_state(name: str) -> str:
     return sets[name]["state"]
 
 
-def test_status_follows_a_set_through_its_lifecycle(
-    env: Env, mysql_repo: Path, ip_pool: IPv4Network
-) -> None:
+def test_status_follows_a_set_through_its_lifecycle(env: Env, mysql_repo: Path) -> None:
     run(SET, "up", "--repos", "api")
 
     detail = run(SET, "status", "--json")
@@ -72,8 +69,11 @@ def test_status_follows_a_set_through_its_lifecycle(
         "state": "running",
         "health": "healthy",
         "hostname": f"mysql.{SET}.test",
-        "ip": ip_in_block(ip_pool, 0, 1),
+        # The container's current address, as Docker has it.
+        "ip": container_address(SET, "mysql"),
     }
+    assert services["agent"]["ip"] == container_address(SET, "agent")
+    assert container_address(SET, "mysql") in run(SET, "status")
     assert detail["repos"] == [
         {
             "name": "api",
@@ -98,12 +98,20 @@ def test_status_follows_a_set_through_its_lifecycle(
         ["docker", "stop", f"{project_name(SET)}-mysql-1"], check=True, capture_output=True
     )
     assert listed_state(SET) == "partial"
+    partial = {s["name"]: s for s in run(SET, "status", "--json")["services"]}
+    # A stopped container has no address; the one still running keeps its own.
+    assert (partial["mysql"]["state"], partial["mysql"]["ip"]) == ("exited", None)
+    assert partial["agent"]["ip"] == container_address(SET, "agent")
 
     run(SET, "down")
     assert listed_state(SET) == "stopped"
+    stopped = run(SET, "status", "--json")["services"]
+    assert {s["name"]: s["hostname"] for s in stopped} == {
+        "agent": None,
+        "mysql": f"mysql.{SET}.test",
+    }
+    assert [s["ip"] for s in stopped] == [None, None]
 
-    # The set directory goes away; its sticky lease is a leftover.
+    # The set directory goes away: with no containers left either, nothing remains of it.
     shutil.rmtree(env.set_dir(SET))
-    sets = {entry["name"]: entry for entry in run("status", "--json")["sets"]}
-    assert sets[SET]["state"] == "orphaned"
-    assert "lease" in sets[SET]["detail"]
+    assert SET not in {entry["name"] for entry in run("status", "--json")["sets"]}

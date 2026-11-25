@@ -35,26 +35,6 @@ services:
 """
 
 
-def hosts_entries(env: Env) -> dict[str, str]:
-    lines = env.hosts_file.read_text().splitlines()
-    return {line.split("\t")[1]: line.split("\t")[0] for line in lines if "\t" in line}
-
-
-def test_extra_hosts_share_the_web_apps_ip_in_the_hosts_block(env: Env, mkcert: FakeMkcert) -> None:
-    git = FakeGit()
-    make_repo(env, git, "web", MULTI_HOST)
-
-    up(env, git, FakeCompose(), mkcert, "web")
-
-    # mysql leases .1, the web app .2; its extra hosts route to the same IP.
-    assert hosts_entries(env) == {
-        "mysql.jira-123.test": "127.42.0.1",
-        "web.jira-123.test": "127.42.0.2",
-        "admin.jira-123.test": "127.42.0.2",
-        "portal.jira-123.test": "127.42.0.2",
-    }
-
-
 def test_extra_hosts_are_network_aliases_of_the_web_service(env: Env, mkcert: FakeMkcert) -> None:
     git = FakeGit()
     make_repo(env, git, "web", MULTI_HOST)
@@ -88,14 +68,16 @@ def test_extra_hosts_are_covered_by_the_sets_wildcard_certificate(
     assert mkcert.issued == [(tls / "cert.pem", tls / "key.pem", ["*.jira-123.test"])]
 
 
-def test_extra_hosts_are_printed_with_the_web_apps_bindings(env: Env, mkcert: FakeMkcert) -> None:
+def test_extra_hosts_are_printed_with_the_web_apps_ports(env: Env, mkcert: FakeMkcert) -> None:
     git = FakeGit()
     make_repo(env, git, "web", MULTI_HOST)
 
     output = up(env, git, FakeCompose(), mkcert, "web")
 
-    assert "  admin.jira-123.test  127.42.0.2  " in output
-    assert "  portal.jira-123.test  127.42.0.2  " in output
+    assert "  web.jira-123.test  443/tcp\n" in output
+    assert "  admin.jira-123.test  443/tcp\n" in output
+    assert "  portal.jira-123.test  443/tcp\n" in output
+    assert "  mysql.jira-123.test  (no ports)\n" in output
 
 
 @pytest.mark.parametrize(
@@ -175,16 +157,17 @@ def test_extra_hosts_take_part_in_the_duplicate_hostname_check(
     assert compose.calls == []
 
 
-def test_vite_port_is_published_on_the_apps_ip_with_the_hmr_host(
-    env: Env, mkcert: FakeMkcert
-) -> None:
+def test_vite_sets_the_hmr_host_and_publishes_nothing(env: Env, mkcert: FakeMkcert) -> None:
     git = FakeGit()
     make_repo(env, git, "web", VITE)
 
-    up(env, git, FakeCompose(), mkcert, "web")
+    output = up(env, git, FakeCompose(), mkcert, "web")
 
     web = services(env)["web"]
-    assert web["ports"] == ["127.42.0.1:443:443/tcp", "127.42.0.1:5173:5173/tcp"]
+    assert web["ports"] == []
+    assert "5173" not in (env.set_dir("jira-123") / "override.yaml").read_text()
+    # The dev server is reached on its port at the app's hostname.
+    assert "  web.jira-123.test  443/tcp, 5173/tcp\n" in output
     assert web["environment"] == {
         "WORKTREE": str(env.set_dir("jira-123") / "web"),
         "APP_URL": "https://web.jira-123.test",
@@ -192,15 +175,16 @@ def test_vite_port_is_published_on_the_apps_ip_with_the_hmr_host(
     }
 
 
-def test_a_declared_vite_port_is_not_published_twice(env: Env, mkcert: FakeMkcert) -> None:
+def test_a_declared_vite_port_is_reset_and_listed_once(env: Env, mkcert: FakeMkcert) -> None:
     git = FakeGit()
     make_repo(
         env, git, "web", VITE.replace("    x-sandbox:", '    ports: ["5173:5173"]\n    x-sandbox:')
     )
 
-    up(env, git, FakeCompose(), mkcert, "web")
+    output = up(env, git, FakeCompose(), mkcert, "web")
 
-    assert services(env)["web"]["ports"] == ["127.42.0.1:5173:5173/tcp", "127.42.0.1:443:443/tcp"]
+    assert services(env)["web"]["ports"] == []
+    assert "  web.jira-123.test  5173/tcp, 443/tcp\n" in output
 
 
 def test_without_vite_no_hmr_host_is_set(env: Env, mkcert: FakeMkcert) -> None:
@@ -210,7 +194,6 @@ def test_without_vite_no_hmr_host_is_set(env: Env, mkcert: FakeMkcert) -> None:
     up(env, git, FakeCompose(), mkcert, "web")
 
     assert "VITE_HMR_HOST" not in services(env)["web"]["environment"]
-    assert services(env)["web"]["ports"] == ["127.42.0.2:443:443/tcp"]
 
 
 @pytest.mark.parametrize("vite", ["true", "0", "70000", "443", '"5173"'])

@@ -4,14 +4,14 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] The set's override publishes no ports and resets every host-side binding a repo declares, including `0.0.0.0` ones
-- [ ] `up`, `down`, `prune` and `destroy` no longer lease or release IPs or write or remove a hosts block
-- [ ] Two sets running the same service both accept connections on its conventional port at their containers' addresses
-- [ ] A web app serves HTTPS on 443 at its container's address with the repo contract unchanged; `vite:` sets the HMR host and publishes nothing
-- [ ] `status` and `urls` show a running service's current address, read from Docker, and none for a stopped set; their JSON models make the address optional
-- [ ] `urls` lists each service's declared container ports as `host:port`; a service that declares none is listed without a port
-- [ ] `up`'s success output shows set hostnames and conventional ports
-- [ ] Services still reach each other by short name inside the set
-- [ ] Unit tests cover the override and the output models through the CLI seam; integration tests connect to two sets on one port and to a web app by address
+- [x] The set's override publishes no ports and resets every host-side binding a repo declares, including `0.0.0.0` ones
+- [x] `up`, `down`, `prune` and `destroy` no longer lease or release IPs or write or remove a hosts block
+- [x] Two sets running the same service both accept connections on its conventional port at their containers' addresses
+- [x] A web app serves HTTPS on 443 at its container's address with the repo contract unchanged; `vite:` sets the HMR host and publishes nothing
+- [x] `status` and `urls` show a running service's current address, read from Docker, and none for a stopped set; their JSON models make the address optional
+- [x] `urls` lists each service's declared container ports as `host:port`; a service that declares none is listed without a port
+- [x] `up`'s success output shows set hostnames and conventional ports
+- [x] Services still reach each other by short name inside the set
+- [x] Unit tests cover the override and the output models through the CLI seam; integration tests connect to two sets on one port and to a web app by address

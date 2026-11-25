@@ -1,11 +1,14 @@
-"""The set network: each service's IP-bound native ports and its set hostname aliases.
+"""The set network: each service's set hostname aliases, and nothing published.
 
 Every service of a set is a hostname, ``<service>.<set>.<domain>`` (the config's ``domain``,
-``test`` by default), with its own leased loopback IP (``sandbox.leases``). Its container
-ports are published on that IP only, at the same port number (``127.42.3.5:3306:3306``), so
-two sets running the same service never collide on the host. The repo's own host-side
-bindings are replaced (Compose's ``!override``), not merged: a ``0.0.0.0:3306`` from the
-repo would clash between sets.
+``test`` by default). Nothing is published on the developer's machine: a service is reached
+at its container's own address on its conventional port, so two sets running the same
+service never collide, and the resolver (``sandbox.resolver``) answers the hostname with
+that address. The repo's own host-side bindings are reset (Compose's ``!override`` with an
+empty list replaces them; a plain list would be merged in): a ``0.0.0.0:3306`` from the repo
+would clash between sets and open the port to the network. The container-side ports a repo
+declares are still parsed (:func:`container_ports`): they are what ``urls`` and ``up``
+report.
 
 On the set network (the project's ``default``) each service answers to its short name, its
 set hostname and any extra hostnames (a web app's ``hosts``); networks the repo attaches it
@@ -15,7 +18,6 @@ to are kept (restated in full, so the entry also stands in for a relocated servi
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from ipaddress import IPv4Address
 from typing import Any, Final, cast
 
 from sandbox.compose.dedup import Override
@@ -39,7 +41,7 @@ class ContainerPort:
 
 
 def container_ports(service: str, definition: Mapping[str, Any]) -> list[ContainerPort]:
-    """The container-side ports a service publishes, in declaration order, deduplicated.
+    """The container-side ports a service declares, in declaration order, deduplicated.
 
     Accepts Compose's short syntax (``"[ip:][host:]container[/proto]"``, ranges included)
     and long syntax (``{target, protocol, ...}``), as written or as ``config`` prints it.
@@ -83,26 +85,23 @@ def network_fragment(
     set_name: str,
     domain: str,
     definitions: Mapping[str, Mapping[str, Any]],
-    ips: Mapping[str, IPv4Address],
     extra_aliases: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, Any]:
-    """Ports and aliases for each service in ``definitions`` that has a leased IP;
-    ``extra_aliases`` adds further set hostnames to a service (service name -> names)."""
+    """No published ports for any service in ``definitions``, and its aliases on the set
+    network; ``extra_aliases`` adds further set hostnames to a service (service name ->
+    names). A service with a ``network_mode`` is on no network, so it only loses its ports."""
     services: dict[str, Any] = {}
     for name, definition in sorted(definitions.items()):
-        ip = ips.get(name)
-        if ip is None or "network_mode" in definition:
+        service: dict[str, Any] = {"ports": Override([])}
+        services[name] = service
+        if "network_mode" in definition:
             continue
-        ports = [f"{ip}:{p.port}:{p.port}/{p.protocol}" for p in container_ports(name, definition)]
         networks = _networks(definition)
         own: dict[str, Any] = networks.get(SET_NETWORK) or {}
         aliases = [name, hostname(name, set_name, domain), *(extra_aliases or {}).get(name, ())]
         extra = [a for a in cast(list[str], own.get("aliases") or []) if a not in aliases]
         networks[SET_NETWORK] = {**own, "aliases": [*aliases, *extra]}
-        service: dict[str, Any] = {"networks": networks}
-        if ports:
-            service["ports"] = Override(ports)
-        services[name] = service
+        service["networks"] = networks
     return {"services": services} if services else {}
 
 

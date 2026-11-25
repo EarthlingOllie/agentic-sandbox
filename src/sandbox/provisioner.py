@@ -8,18 +8,20 @@
   mkcert CA (``sandbox.web``), check what ``sudo sandbox setup`` installs
   (``sandbox.preflight``), check init hooks target the set's services
   (``sandbox.hooks``), then observe the set's state.
-  Nothing is created until all of them pass.
+  Nothing is created until all of them pass, and none of them writes anything.
 - The state table (``sandbox.state``) decides: provision, resume, no-op or recreate.
 - ``PROVISION_STEPS`` write the plan, ensure the agent's clones, issue or reuse the set's TLS
   certificate (``sandbox.web``) and bring services up healthy as
-  Compose project ``sandbox-<set>``, run the repos' init hooks in them (``sandbox.hooks``),
-  attach the resolver to the set (``sandbox.resolver``), then write the set's hosts block
-  (``sandbox.hosts``); on failure or Ctrl-C, started steps roll back.
+  Compose project ``sandbox-<set>`` (publishing nothing: ``sandbox.compose.network``), run
+  the repos' init hooks in them (``sandbox.hooks``), then attach the resolver to the set
+  (``sandbox.resolver``); on failure or Ctrl-C, started steps roll back.
+
+No IP is leased and no hosts block is written: a set's addressing state is Docker's alone.
 
 A later concern adds its step in its own module and one line to one of the two lists.
 After the steps (and on a no-op), ``up`` syncs each clone's ``agent/<set>`` into its source
-repo (``sandbox.clones``). ``down`` detaches the resolver, stops the project, removes the
-hosts block, syncs the same way and leaves the clones alone.
+repo (``sandbox.clones``). ``down`` detaches the resolver, stops the project, syncs the same
+way and leaves the clones alone.
 """
 
 from collections.abc import Sequence
@@ -29,14 +31,7 @@ from typing import Any, Final
 
 from sandbox.agent_image import DockerImageProbe, ImageProbe
 from sandbox.agent_override import check_agent_override
-from sandbox.bindings import (
-    Binding,
-    bindings,
-    lease_ips,
-    lease_store,
-    service_ips,
-    up_lock_path,
-)
+from sandbox.bindings import Binding, bindings, up_lock_path
 from sandbox.certs import Mkcert, SubprocessMkcert
 from sandbox.clones import CloneManager, CloneOutcome, CloneResult
 from sandbox.compose import AGENT_SERVICE, project_name
@@ -44,16 +39,14 @@ from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import resolve as resolve_services
 from sandbox.compose.override import OverrideContext, write_override
 from sandbox.compose.services import SANDBOX_DIRNAME, RepoCompose, load_repo_compose
-from sandbox.compose.web import extra_hostnames
 from sandbox.config import Config
 from sandbox.docker import Docker, SubprocessDocker
 from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.hooks import check_hooks, run_hooks
-from sandbox.hosts import HostsWriter, hosts_writer, remove_hosts_block, write_hosts_block
 from sandbox.locking import file_lock
 from sandbox.names import agent_branch, validate_repo_name, validate_set_name
-from sandbox.pipeline import Step, UpContext, Warn, fail_fast, provision, shielded, validate
+from sandbox.pipeline import Step, UpContext, Warn, fail_fast, provision, validate
 from sandbox.plan import (
     SetPlan,
     SetRepo,
@@ -83,7 +76,7 @@ class UpResult:
     # Service names started under `project`; empty for a set without services.
     services: list[str]
     action: UpAction
-    # Each service hostname with its leased IP and native ports.
+    # Each set hostname with the conventional ports it answers on.
     bindings: list[Binding]
     # One line per repo whose agent branch couldn't be synced into its source.
     sync_notes: list[str]
@@ -207,7 +200,6 @@ async def _compose_up(ctx: UpContext) -> None:
             ctx.graph,
             ctx.plan.sources(),
             ctx.plan.agent,
-            service_ips(ctx.set_name, ctx.config.domain, ctx.graph, ctx.lease),
             web_apps=ctx.web_apps,
             root_ca=ctx.root_ca,
             tls_dir=ctx.certificate.directory if ctx.certificate else None,
@@ -229,7 +221,6 @@ VALIDATION_STEPS: Final[list[Step]] = [
     Step("web-apps", check_web_apps),
     Step("agent-override", check_agent_override),
     Step("prerequisites", check_prerequisites),
-    Step("ip-leases", lease_ips),
     Step("init-hooks", check_hooks),
     # Register further checks (hostname clashes, prerequisites) above this line.
     Step("observe-state", _observe_state),
@@ -243,8 +234,7 @@ PROVISION_STEPS: Final[list[Step]] = [
     Step("compose-up", _compose_up, rollback=_compose_down),
     Step("init-hooks", run_hooks),
     Step("resolver", attach_resolver, rollback=detach_resolver),
-    Step("hosts-block", write_hosts_block, rollback=remove_hosts_block),
-    # Register post-up steps (hosts block, init hooks) below this line.
+    # Register post-up steps below this line.
 ]
 
 
@@ -256,7 +246,6 @@ class Provisioner:
         compose: Compose,
         warn: Warn,
         images: ImageProbe | None = None,
-        hosts: HostsWriter | None = None,
         mkcert: Mkcert | None = None,
         host: Host | None = None,
         docker: Docker | None = None,
@@ -265,7 +254,6 @@ class Provisioner:
         self._docker = docker if docker is not None else SubprocessDocker()
         self._host = host if host is not None else Host()
         self._mkcert = mkcert if mkcert is not None else SubprocessMkcert()
-        self._hosts = hosts if hosts is not None else hosts_writer(config)
         self._images = images if images is not None else DockerImageProbe()
         self._git = git
         self._compose = compose
@@ -317,27 +305,19 @@ class Provisioner:
             plan_on_disk=on_disk is not None,
             recreate=recreate,
             images=self._images,
-            hosts=self._hosts,
             mkcert=self._mkcert,
             host=self._host,
             docker=self._docker,
         )
-        # Held throughout, so bare `prune` leaves this set's lease alone while it has none of
-        # the plan that would show the lease is in use.
+        # Held throughout, so `prune` leaves this set alone while it is coming up.
         async with file_lock(up_lock_path(self._config, set_name)):
-            try:
-                await validate(VALIDATION_STEPS, ctx)
-                if ctx.action is not UpAction.NOOP:
-                    await provision(PROVISION_STEPS, ctx)
-                else:
-                    # Nothing to provision, but the resolver may have been removed since.
-                    await attach_resolver(ctx)
-                synced = await self._clones.sync_set(set_dir, ctx.plan, ctx.branch)
-            except BaseException:
-                if ctx.lease_created and not plan_file.exists():
-                    # Nothing else knows this set yet: give back what this `up` leased.
-                    await shielded(lease_store(self._config).release(set_name))
-                raise
+            await validate(VALIDATION_STEPS, ctx)
+            if ctx.action is not UpAction.NOOP:
+                await provision(PROVISION_STEPS, ctx)
+            else:
+                # Nothing to provision, but the resolver may have been removed since.
+                await attach_resolver(ctx)
+            synced = await self._clones.sync_set(set_dir, ctx.plan, ctx.branch)
         return UpResult(
             set_name,
             set_dir,
@@ -347,13 +327,7 @@ class Provisioner:
             ctx.project,
             ctx.services,
             ctx.action,
-            bindings(
-                ctx.set_name,
-                ctx.config.domain,
-                ctx.graph,
-                ctx.lease,
-                extra_hostnames(ctx.web_apps),
-            ),
+            bindings(ctx.set_name, ctx.config.domain, ctx.graph, ctx.web_apps),
             [s.note() for s in synced if not s.synced],
         )
 
@@ -367,7 +341,6 @@ class Provisioner:
         project = project_name(set_name)
         await detach(self._docker, set_name)
         await self._compose.down(project)
-        await self._hosts.remove(set_name)
         plan = load_set_plan(set_dir)
         synced = await self._clones.sync_set(set_dir, plan, agent_branch(set_name))
         return DownResult(set_name, set_dir, project, [s.note() for s in synced if not s.synced])

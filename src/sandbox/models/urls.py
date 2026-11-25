@@ -1,4 +1,5 @@
-"""What ``urls`` reports: one set's host-resolvable addresses, each with its IP.
+"""What ``urls`` reports: one set's addresses, each with its container's current address
+while it runs.
 
 The table renderer and ``--json`` print the same model, so scripts see exactly the
 addresses the table shows (``--json`` is ``model_dump_json``).
@@ -19,22 +20,22 @@ class WebUrl(_Model):
     # ``https://<host>.<set>.<domain>``, or ``...:<port>`` for a Vite dev server.
     url: str
     service: str
-    # None when the set has never leased its IPs.
-    ip: IPv4Address | None
+    # The container's current address, read from Docker; absent unless it is running.
+    ip: IPv4Address | None = None
 
 
 class ServiceAddress(_Model):
-    # ``<service>.<set>.<domain>:<port>`` (``/udp`` appended for UDP), or the bare hostname for
-    # a service that publishes no port.
+    # ``<service>.<set>.<domain>:<port>`` for each container port the service declares
+    # (``/udp`` appended for UDP), or the bare hostname for a service that declares none.
     address: str
     service: str
-    ip: IPv4Address | None
+    ip: IPv4Address | None = None
 
 
 class SetUrls(_Model):
     name: str
     state: SetStateName
-    # False unless every service runs: the addresses then come from the set's sticky lease.
+    # False unless every service runs; a service that is not running has no ``ip``.
     running: bool
     web: list[WebUrl]
     services: list[ServiceAddress]
