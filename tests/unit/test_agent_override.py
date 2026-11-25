@@ -16,7 +16,7 @@ from typer.testing import CliRunner, Result
 
 from sandbox.cli import app
 from sandbox.context import Deps
-from tests.conftest import Env
+from tests.conftest import Env, set_up_machine
 from tests.fakes import FakeGit
 from tests.fakes_compose import FakeCompose, load_compose_yaml
 from tests.fakes_docker import FakeDocker
@@ -49,7 +49,13 @@ class Harness:
 
     def invoke(self, *args: str) -> Result:
         docker = FakeDocker(self.compose)
-        deps = Deps(git=self.git, compose=self.compose, images=self.images, docker=docker)
+        deps = Deps(
+            git=self.git,
+            compose=self.compose,
+            images=self.images,
+            docker=docker,
+            host=set_up_machine(),
+        )
         return CliRunner().invoke(app, list(args), obj=deps)
 
     def up(self, *args: str) -> Result:

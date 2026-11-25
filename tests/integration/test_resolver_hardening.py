@@ -190,10 +190,14 @@ def test_the_resolver_runs_without_privileges_a_writable_filesystem_or_mounts(re
     assert not host_config.get("Tmpfs")
     assert not host_config.get("VolumesFrom")
     # As it runs: the dnsmasq process itself holds no capability and can gain none.
-    status = dict(
-        line.split(":\t", 1)
-        for line in docker("exec", RESOLVER_CONTAINER, "cat", "/proc/1/status").splitlines()
-    )
+    # `Key:<tab>value` lines; some kernels (the GitHub runner's) print keys with no value.
+    status = {
+        key: value.strip()
+        for key, _, value in (
+            line.partition(":")
+            for line in docker("exec", RESOLVER_CONTAINER, "cat", "/proc/1/status").splitlines()
+        )
+    }
     assert status["Name"] == "dnsmasq"
     assert status["Uid"].split() == ["65534"] * 4
     for capabilities in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):

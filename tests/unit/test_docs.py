@@ -204,6 +204,14 @@ def test_the_per_push_workflow_still_runs_unit_and_integration_tests() -> None:
     assert not any("SANDBOX_E2E" in command for command in commands)
 
 
+@pytest.mark.parametrize("path", [CI, E2E], ids=lambda p: p.name)
+def test_a_hung_test_ends_its_job_long_before_the_six_hour_default(path: Path) -> None:
+    jobs = cast(dict[str, dict[str, Any]], _workflow(path)["jobs"])
+
+    for name, job in jobs.items():
+        assert 0 < int(job.get("timeout-minutes", 0)) <= 60, f"job {name} has no time limit"
+
+
 def test_the_glossary_and_the_adr_name_the_terms_the_readme_uses_for_addressing() -> None:
     glossary, adr = _read(GLOSSARY), _read(ADR)
 

@@ -15,7 +15,7 @@ from sandbox.compose.cli import ComposeError
 from sandbox.config import load_config
 from sandbox.errors import SandboxError
 from sandbox.provisioner import Provisioner
-from tests.conftest import Env, invoke
+from tests.conftest import Env, invoke, set_up_machine
 from tests.fakes import FakeGit
 from tests.fakes_compose import FakeCompose
 from tests.fakes_docker import FakeDocker
@@ -332,11 +332,23 @@ class HangingCompose(FakeCompose):
 async def _cancel_mid_up(env: Env, compose: HangingCompose, *, cancels: int) -> None:
     git = FakeGit()
     make_repo(env, git)
+    # On a machine setup has run on, like every `up` these tests invoke: the real one may
+    # have no setup, and `up` would then refuse before it started anything.
     provisioner = Provisioner(
-        load_config(), git, compose, lambda _: None, docker=FakeDocker(compose)
+        load_config(),
+        git,
+        compose,
+        lambda _: None,
+        docker=FakeDocker(compose),
+        host=set_up_machine(),
     )
     task = asyncio.create_task(provisioner.up("jira-123", repos=["api"], cwd=env.cwd))
-    await compose.started.wait()
+    started = asyncio.create_task(compose.started.wait())
+    await asyncio.wait({task, started}, return_when=asyncio.FIRST_COMPLETED)
+    if not started.done():
+        started.cancel()
+        await task  # `up` ended before it started the services: raise why
+        pytest.fail("`up` returned without starting the set's services")
     for _ in range(cancels):
         task.cancel()
         await asyncio.sleep(0.01)

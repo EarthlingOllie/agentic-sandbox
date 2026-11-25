@@ -76,6 +76,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     monkeypatch.setenv("SANDBOX_CONFIG", str(environment.config_file))
+    # Plain output wherever the tests run: on a GitHub runner (GITHUB_ACTIONS) usage errors
+    # are otherwise rendered in colour, with escape codes inside the text tests look for.
+    monkeypatch.setenv("TERM", "dumb")
     monkeypatch.chdir(cwd)
     return environment
 
