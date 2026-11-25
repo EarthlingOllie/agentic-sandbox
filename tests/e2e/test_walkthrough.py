@@ -14,14 +14,22 @@ every check goes into a report printed at the end (``tests.e2e.walkthrough``): t
 what was checked, pass or fail, and the output of anything that failed. A failed check does
 not stop the steps that do not depend on it, and the teardown always runs.
 
+It also proves that every address a set reports is usable from the machine: for each running
+set it connects to every address ``urls --json`` prints, speaking the service's protocol
+where it knows one (``tests.e2e.probes``); it runs two sets at once and reads each set's
+own data back from the same service on the same conventional port; it repeats the
+connections from inside the agent; it checks that one set's containers cannot reach the
+other's; and it checks that names follow a recreated set, stop resolving after ``down``,
+and fail fast when unknown.
+
 Set hostnames are resolved the way any program on the machine resolves them, through the
-operating system (``getaddrinfo``), never by asking the resolver directly.
+operating system (``getaddrinfo``). The resolver is asked directly only to explain a failed
+check in the report (``probes.diagnose``), never to pass one.
 """
 
 import json
 import os
 import re
-import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -32,23 +40,39 @@ import pytest
 import yaml
 
 from sandbox.compose import project_name
-from sandbox.compose.resolver import RESOLVER_CONTAINER
+from sandbox.compose.resolver import RESOLVER_ADDRESS, RESOLVER_CONTAINER, RESOLVER_PORT
 from sandbox.plan import plan_path
 from sandbox.platforms import Host
 from sandbox.resolver_config import installed_domains
+from tests.e2e import probes
 from tests.e2e.conftest import E2E_ENABLED, REPORT_KEY, RUN_ID, SKIP_REASON, Completed, Machine
+from tests.e2e.probes import Target, lookup
 from tests.e2e.walkthrough import Phase, Stop, Walkthrough
 
 pytestmark = [pytest.mark.e2e, pytest.mark.skipif(not E2E_ENABLED, reason=SKIP_REASON)]
 
-REPOS = ("api", "jobs", "web")
+REPOS = ("api", "cache", "jobs", "web")
 # Every service of a set built from REPOS: the agent, the `mysql` that `api` and `jobs`
-# share, `toolbox` from `jobs` (it declares no ports) and the web app.
-SERVICES = ["agent", "mysql", "toolbox", "web"]
+# share, `redis` and `worker` from `cache`, `toolbox` from `jobs` and the web app.
+SERVICES = ["agent", "mysql", "redis", "toolbox", "web", "worker"]
+# The services that declare no ports. `worker` listens on a port all the same; `toolbox`
+# listens on nothing; in the agent the harness starts a listener of its own.
+WORKER_PORT, AGENT_PORT = 9000, 9001
+LISTENS = {"worker": WORKER_PORT, "agent": AGENT_PORT}
+# The root password the mysql fixtures set.
+MYSQL_PASSWORD = "sandbox"  # noqa: S105 - a fixture's, protecting nothing
+READ_OWNER = "SELECT name FROM app.owner"
 # The web app's extra host: another name of the `web` container.
 EXTRA_HOSTS = {"admin": "web"}
 # How long the operating system may take to follow the resolver (its answers live 1 second).
 RESOLVE_WITHIN = 20.0
+# "Within a few seconds": how long after `up` or `up --recreate` returns every address of
+# the set must have answered its probe.
+REACHABLE_WITHIN = 10.0
+# "Fails fast": how long the operating system may take to say an unknown name does not exist.
+FAILS_WITHIN = 2.0
+# How long a connection from inside a container may take before it counts as not possible.
+CONNECT_SECONDS = 5
 PROJECT_LABEL = "com.docker.compose.project"
 CLAUDE_VERSION = re.compile(r"^\d+\.\d+\.\d+\S* \(Claude Code\)$", re.MULTILINE)
 
@@ -57,15 +81,6 @@ def that(condition: object, problem: str) -> None:
     """A check's assertion: ``problem`` is what the report shows when it does not hold."""
     if not condition:
         raise AssertionError(problem)
-
-
-def lookup(hostname: str) -> str | None:
-    """The address the operating system's resolver gives for ``hostname``; None if none."""
-    try:
-        found = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_STREAM)
-    except socket.gaierror:
-        return None
-    return str(found[0][4][0])
 
 
 def eventually(found: Callable[[], object], wanted: Callable[[object], bool]) -> object:
@@ -101,6 +116,8 @@ class Harness:
         self.a, self.b, self.o = m.set_name("a"), m.set_name("b"), m.set_name("o")
         self.c = m.set_name("c")
         self.from_repos, self.from_set = f"e2e-{RUN_ID}-repos", f"e2e-{RUN_ID}-set"
+        # The hostnames `urls --json` last reported for each set, for the checks after `down`.
+        self.reported: dict[str, list[str]] = {}
 
     # --- running and checking ------------------------------------------------------------
 
@@ -207,7 +224,7 @@ class Harness:
 
         self.check(
             done,
-            "the agent, the web app, toolbox and one shared mysql are running",
+            "the agent, the web app, redis, worker, toolbox and one shared mysql are running",
             running,
         )
 
@@ -220,11 +237,119 @@ class Harness:
                 name = self.hostname(host, set_name)
                 address = found[EXTRA_HOSTS.get(host, host)].address
                 got = eventually(lambda name=name: lookup(name), lambda g, a=address: g == a)
-                that(got == address, f"{name} resolves to {got}; its container is at {address}")
+                that(
+                    got == address,
+                    f"{name} resolves to {got}; its container is at {address}\n"
+                    + probes.diagnose(name, RESOLVER_ADDRESS, RESOLVER_PORT),
+                )
 
         names = ", ".join(self.hostname(host, set_name) for host in hosts)
         self.check(
             done, f"the operating system resolves {names} to the containers' addresses", resolves
+        )
+
+    # --- connecting to what a set reports -------------------------------------------------
+
+    def ca(self) -> Path:
+        """The mkcert CA that signs the sets' certificates: the user's own."""
+        caroot = self.machine.command(["mkcert", "-CAROOT"])
+        that(caroot.status == 0, f"`{caroot.command}` failed: {caroot.output}")
+        return Path(caroot.stdout.strip()) / "rootCA.pem"
+
+    def reported_by_urls(self, set_name: str) -> list[Target]:
+        """Every address ``sandbox SET urls --json`` reports; ends the phase if it reports
+        none, since the connection checks are driven by that list and nothing else."""
+        done = self.sandbox(set_name, "urls", "--json")
+        found: list[Target] = []
+        self.check(
+            done,
+            "reports the set as running, with the addresses to connect to",
+            lambda: (
+                found.extend(probes.targets(json.loads(done.stdout))),
+                that(json.loads(done.stdout)["running"] is True, "the set is not running"),
+            ),
+        )
+        if not found:
+            raise Stop
+        self.reported[set_name] = sorted({target.hostname for target in found})
+        return found
+
+    def listen_in_agent(self, set_name: str) -> None:
+        """Start something listening in the set's agent, as a developer's dev server would:
+        the agent declares no ports and is reached on whatever it listens on."""
+        serve = f'require("net").createServer(s => s.end("agent ready\\n")).listen({AGENT_PORT})'
+        self.sandbox(set_name, "sh", stdin=f"nohup node -e '{serve}' >/dev/null 2>&1 &\n")
+
+    def probe(self, target: Target, set_name: str) -> None:
+        """Connect to ``target`` from this machine, by its hostname, and speak its protocol.
+        Raises unless what answers is the set's own service."""
+        protocol, port = probes.choose(target, LISTENS)
+        host = target.hostname
+        if protocol == "https":
+            body = json.loads(probes.https_get(target.address, self.ca()))
+            app_url = f"https://{self.hostname('web', set_name)}"
+            that(body["APP_URL"] == app_url, f"answered by the app of {body['APP_URL']}")
+        elif protocol == "mysql":
+            rows = probes.mysql(host, port, MYSQL_PASSWORD, "SELECT DATABASE(), 1 + 1")
+            that(rows == [(None, 2)], f"SELECT DATABASE(), 1 + 1 returned {rows}")
+        elif protocol == "redis":
+            that(probes.redis(host, port, "PING") == "PONG", "PING was not answered with PONG")
+        elif protocol == "tcp":
+            probes.connect(host, port)
+        else:
+            probes.refused(host, port)
+
+    def connect_to_every_address(
+        self, set_name: str, found: list[Target], since: float, what: str
+    ) -> None:
+        """One check per reported address: the operating system resolves its hostname to the
+        address ``urls`` reported, and its probe passes, within ``REACHABLE_WITHIN`` seconds
+        of ``since``. A failure is reported with the resolver diagnostic beside it."""
+        deadline = since + REACHABLE_WITHIN
+        for target in found:
+            protocol, port = probes.choose(target, LISTENS)
+
+            def reached(target: Target = target) -> None:
+                while True:
+                    try:
+                        got = lookup(target.hostname)
+                        that(
+                            got == target.ip,
+                            f"the operating system resolves {target.hostname} to {got}; "
+                            f"`urls` reports its container at {target.ip}",
+                        )
+                        self.probe(target, set_name)
+                    except Exception as exc:
+                        if time.monotonic() < deadline:
+                            time.sleep(0.25)
+                            continue
+                        late = time.monotonic() - since
+                        raise AssertionError(
+                            f"not within {late:.1f} s: {type(exc).__name__}: {exc}\n"
+                            + probes.diagnose(target.hostname, RESOLVER_ADDRESS, RESOLVER_PORT)
+                        ) from exc
+                    return
+
+            self.walk.check(
+                probes.describe(target, protocol, port),
+                f"{what}: `urls` reports {target.address}; its name resolves through the "
+                f"operating system to the reported container address and the {target.service} "
+                f"of {set_name} answers",
+                reached,
+            )
+        took = time.monotonic() - since
+        self.walk.check(
+            f"connect to all {len(found)} addresses of {set_name}",
+            f"{what}: every address answered within {REACHABLE_WITHIN:.0f} s (took {took:.1f} s)",
+            lambda: that(took <= REACHABLE_WITHIN, f"took {took:.1f} s"),
+        )
+
+    def in_agent(self, set_name: str, script: str) -> Completed:
+        """Run a bash ``script`` in the set's agent, through ``sandbox SET sh`` (whose own
+        shell is ``sh``), for at most twice the time one connection may take."""
+        that("'" not in script, "the script is passed in single quotes")
+        return self.sandbox(
+            set_name, "sh", stdin=f"timeout {CONNECT_SECONDS * 2} bash -c '{script}'\n"
         )
 
     # --- the phases ----------------------------------------------------------------------
@@ -268,7 +393,10 @@ class Harness:
             "reports the set as provisioned, its plan as created, and its hostnames",
             f"set {a}: {self.set_dir(a)} (provisioned)",
             f"{plan_path(self.set_dir(a))} (created)",
-            *(self.hostname(name, a) for name in ("mysql", "toolbox", "web", "admin")),
+            *(
+                self.hostname(name, a)
+                for name in ("mysql", "redis", "worker", "toolbox", "web", "admin")
+            ),
         )
         self.check_clones(done, a)
         self.check_running(done, a)
@@ -388,31 +516,171 @@ class Harness:
         )
         self.check_resolves(done, b, ["mysql", "web"])
 
+    def phase_connect(self) -> None:
+        """Every address the set reports is usable from this machine."""
+        a = self.a
+        self.listen_in_agent(a)
+        since = time.monotonic()
+        found = self.reported_by_urls(a)
+        self.connect_to_every_address(a, found, since, "from the host")
+
     def phase_two_sets(self) -> None:
-        """Both sets run the same mysql on its conventional port, each at its own address."""
-        addresses: dict[str, str] = {}
-        for name in (self.a, self.b):
+        """Both sets run the same services on the same conventional ports, and each name
+        leads to its own set's instance."""
+        a, b = self.a, self.b
+        self.listen_in_agent(b)
+        since = time.monotonic()
+        found = self.reported_by_urls(b)
+        self.connect_to_every_address(b, found, since, "from the host, beside the other set")
+
+        def addresses(service: str) -> dict[str, str | None]:
+            return {name: lookup(self.hostname(service, name)) for name in (a, b)}
+
+        for service, port in (("mysql", 3306), ("redis", 6379), ("web", 443)):
+            self.walk.check(
+                f"resolve {service}.<set>.{self.machine.domain} for both sets",
+                f"{service} answers on {port} in both sets at once, at two different addresses",
+                lambda service=service: that(
+                    None not in addresses(service).values()
+                    and len(set(addresses(service).values())) == 2,
+                    f"addresses by set: {addresses(service)}",
+                ),
+            )
+
+        # Each set's name is written into that set's own mysql and redis, through the set
+        # hostname and the conventional port; then both are read back. Had the two names
+        # led to one instance, both would read the name written last.
+        def write(name: str) -> None:
+            probes.mysql(
+                self.hostname("mysql", name), 3306, MYSQL_PASSWORD,
+                "CREATE TABLE IF NOT EXISTS app.owner (name VARCHAR(64))",
+                "DELETE FROM app.owner",
+                # A set name is letters, digits and hyphens (`validate_set_name`).
+                f"INSERT INTO app.owner VALUES ('{name}')",  # noqa: S608
+            )  # fmt: skip
+            that(probes.redis(self.hostname("redis", name), 6379, "SET", "owner", name) == "OK",
+                 "SET was not answered with OK")  # fmt: skip
+
+        for name in (a, b):
+            self.walk.check(
+                f"write {name!r} to mysql.{name}.{self.machine.domain}:3306 and "
+                f"redis.{name}.{self.machine.domain}:6379",
+                "a login to mysql and a SET in redis, by set hostname, store the set's name",
+                lambda name=name: write(name),
+            )
+
+        def owner_in_mysql(name: str) -> None:
             host = self.hostname("mysql", name)
-            label = f"connect to {host}:3306 (name from the operating system resolver)"
+            rows = probes.mysql(host, 3306, MYSQL_PASSWORD, READ_OWNER)
+            that(rows == [(name,)], f"rows: {rows}")
 
-            def greets(name: str = name, host: str = host) -> None:
-                address = eventually(lambda: lookup(host), lambda got: got is not None)
-                that(isinstance(address, str), f"{host} does not resolve")
-                with socket.create_connection((host, 3306), timeout=10) as connection:
-                    connection.settimeout(10)
-                    greeting = connection.recv(128)
-                that(b"8.4" in greeting, f"no MySQL 8.4 greeting from {host}:3306: {greeting!r}")
-                addresses[name] = str(address)
+        def owner_in_redis(name: str) -> None:
+            owner = probes.redis(self.hostname("redis", name), 6379, "GET", "owner")
+            that(owner == name, f"owner: {owner!r}")
 
-            self.walk.check(label, "MySQL answers there, with nothing published", greets)
-        self.walk.check(
-            f"connect to mysql.<set>.{self.machine.domain}:3306 in both sets",
-            "the two sets' mysql are different containers at different addresses",
-            lambda: that(
-                len(addresses) == 2 and len(set(addresses.values())) == 2,
-                f"addresses by set: {addresses}",
-            ),
+        for name in (a, b):
+            self.walk.check(
+                f"query mysql.{name}.{self.machine.domain}:3306 for the name stored there",
+                f"mysql on 3306 returns its own set's data ({name!r}), not the other set's",
+                lambda name=name: owner_in_mysql(name),
+            )
+            self.walk.check(
+                f"GET owner at redis.{name}.{self.machine.domain}:6379",
+                f"redis on 6379 returns its own set's data ({name!r}), not the other set's",
+                lambda name=name: owner_in_redis(name),
+            )
+
+    def phase_from_agent(self) -> None:
+        """The same hostnames and ports, from inside each set's agent."""
+        for name in (self.a, self.b):
+            for target in self.reported_by_urls(name):
+                self._check_from_agent(name, target)
+
+    def _check_from_agent(self, set_name: str, target: Target) -> None:
+        protocol, port = probes.choose(target, LISTENS)
+        where = f"/dev/tcp/{target.hostname}/{port}"
+        opened = f"exec 3<>{where} || exit 1"
+        if protocol == "https":
+            # The agent's own trust store and resolver: no --cacert, no --resolve, no -k.
+            script = f"curl -sS --fail {target.address}/"
+            wanted = f'"APP_URL": "https://{self.hostname("web", set_name)}"'
+            checked = "answers HTTPS, trusted by the agent, as this set's web app"
+        elif protocol == "mysql":
+            # The start of the server's greeting, which has its version.
+            script = f"{opened}; head -c 16 <&3 | tr -dc [:print:]"
+            wanted, checked = "8.4", "MySQL 8.4 greets the connection"
+        elif protocol == "redis":
+            script = f'{opened}; printf "PING\\r\\n" >&3; head -n 1 <&3'
+            wanted, checked = "+PONG", "redis answers a PING with PONG"
+        elif protocol == "tcp":
+            script, wanted = f"{opened}; head -n 1 <&3", " ready"
+            checked = "the connection opens and the listener greets it"
+        else:
+            script = f"(exec 3<>{where}) 2>&1; true"
+            wanted, checked = "Connection refused", "the container is reached and refuses the port"
+        done = self.in_agent(set_name, script)
+        self.check(
+            done,
+            f"from inside the agent of {set_name}, {target.hostname}:{port} works as it does "
+            f"from the host: {checked}",
+            lambda: that(wanted in done.output, f"expected {wanted!r} in its output"),
         )
+
+    def phase_isolation(self) -> None:
+        """A container of one set cannot connect to the other set's services, by container
+        address or by name; the same attempt at its own set's service does connect."""
+        a, b = self.a, self.b
+        services = (("mysql", 3306), ("redis", 6379), ("web", 443), ("worker", WORKER_PORT))
+        for here, there in ((a, b), (b, a)):
+            own = self.containers(here)["mysql"].address
+            control = self.in_agent(here, self._attempt(own, 3306))
+            self.check(
+                control,
+                f"control: from the agent of {here}, its own set's mysql at {own}:3306 connects "
+                "(so a refusal below is not the probe's doing)",
+                lambda control=control: that("CONNECTED" in control.stdout, "did not connect"),
+            )
+            others = self.containers(there)
+            for service, port in services:
+                for host in (others[service].address, self.hostname(service, there)):
+                    done = self.in_agent(here, self._attempt(host, port))
+                    self.check(
+                        done,
+                        f"from the agent of {here}, {service} of {there} at {host}:{port} "
+                        "cannot be connected to",
+                        lambda done=done: that(
+                            "BLOCKED" in done.stdout and "CONNECTED" not in done.stdout,
+                            "the connection opened",
+                        ),
+                    )
+
+    def _attempt(self, host: str, port: int) -> str:
+        return (
+            f'timeout {CONNECT_SECONDS} bash -c "exec 3<>/dev/tcp/{host}/{port}" 2>/dev/null '
+            "&& echo CONNECTED || echo BLOCKED"
+        )
+
+    def phase_unknown_names(self) -> None:
+        """A name under the domain that no set has fails, and fails fast."""
+        domain = self.machine.domain
+        for name in (
+            self.hostname("nope", self.a),  # no such service in a running set
+            self.hostname("mysql", f"{self.a}-nope"),  # no such set
+            f"e2e-{RUN_ID}-nope.{domain}",  # not a set hostname at all
+        ):
+            started = time.monotonic()
+            got = lookup(name)
+            took = time.monotonic() - started
+            self.walk.check(
+                f"resolve {name}",
+                f"an unknown name under .{domain} does not resolve, and the operating system "
+                f"says so within {FAILS_WITHIN:.0f} s (took {took:.2f} s)",
+                lambda got=got, took=took, name=name: that(
+                    got is None and took <= FAILS_WITHIN,
+                    f"resolved to {got} after {took:.2f} s\n"
+                    + probes.diagnose(name, RESOLVER_ADDRESS, RESOLVER_PORT),
+                ),
+            )
 
     def phase_repeated_up(self) -> None:
         a = self.a
@@ -434,7 +702,21 @@ class Harness:
         a = self.a
         before = self.containers(a)
         done = self.sandbox(a, "up", "--recreate")
+        since = time.monotonic()
         self.says(done, "reports the set as recreated", f"set {a}: {self.set_dir(a)} (recreated)")
+
+        # Before anything else, so that the time measured is the time since the verb returned.
+        self.listen_in_agent(a)
+        found = self.reported_by_urls(a)
+        moved = sorted(
+            service for service, c in self.containers(a).items()
+            if service in before and c.address != before[service].address
+        )  # fmt: skip
+        self.connect_to_every_address(
+            a, found, since,
+            f"after --recreate ({len(moved)} of {len(before)} containers have a new address: "
+            f"{', '.join(moved) or 'none'})",
+        )  # fmt: skip
 
         def restarted() -> None:
             after = self.containers(a)
@@ -517,14 +799,19 @@ class Harness:
             wanted = {f"https://{self.hostname(name, a)}" for name in ("web", "admin")}
             that(web == wanted, f"web apps {web}, expected {wanted}")
             services = {s["address"] for s in found["services"]}
-            wanted = {f"{self.hostname('mysql', a)}:3306", self.hostname("toolbox", a)}
+            wanted = {
+                f"{self.hostname('mysql', a)}:3306",
+                f"{self.hostname('redis', a)}:6379",
+                self.hostname("toolbox", a),
+                self.hostname("worker", a),
+            }
             that(services == wanted, f"services {services}, expected {wanted}")
             that(found["agent"]["address"] == self.hostname("agent", a), f"agent: {found['agent']}")
 
         self.check(
             as_json,
-            "prints JSON with the web app's two URLs, mysql on 3306, toolbox without a port, "
-            "and the agent's hostname",
+            "prints JSON with the web app's two URLs, mysql on 3306, redis on 6379, toolbox and "
+            "worker without a port, and the agent's hostname",
             addresses,
         )
 
@@ -724,13 +1011,24 @@ class Harness:
             ),
         )
 
-        def gone() -> None:
-            for service in ("web", "mysql", "agent"):
-                name = self.hostname(service, a)
-                got = eventually(lambda name=name: lookup(name), lambda g: g is None)
-                that(got is None, f"{name} still resolves to {got}")
+        # Every hostname `urls --json` reported while the set ran; these three if it never did.
+        names = self.reported.get(a) or [self.hostname(s, a) for s in ("web", "mysql", "agent")]
 
-        self.check(done, "the set's hostnames no longer resolve through the operating system", gone)
+        def gone() -> None:
+            for name in names:
+                got = eventually(lambda name=name: lookup(name), lambda g: g is None)
+                that(
+                    got is None,
+                    f"{name} still resolves to {got}\n"
+                    + probes.diagnose(name, RESOLVER_ADDRESS, RESOLVER_PORT),
+                )
+
+        self.check(
+            done,
+            f"none of the set's {len(names)} hostnames resolves through the operating system "
+            f"any more ({', '.join(names)})",
+            gone,
+        )
 
         status = self.sandbox(a, "status", "--json")
 
@@ -748,12 +1046,12 @@ class Harness:
             shown = json.loads(urls.stdout)
             that(shown["running"] is False, f"running: {shown['running']}")
             listed = [*shown["web"], *shown["services"], shown["agent"]]
-            that(len(listed) == 5, f"addresses listed: {listed}")
+            that(len(listed) == 7, f"addresses listed: {listed}")
             that(all(entry["ip"] is None for entry in listed), f"addresses: {listed}")
 
         self.check(
             urls,
-            "the same five addresses are listed, as not running and without container addresses",
+            "the same seven addresses are listed, as not running and without container addresses",
             not_running,
         )
         claude = self.sandbox(a, "claude", "--version", exits=1)
@@ -1006,7 +1304,11 @@ class Harness:
             Phase("SET save", self.phase_save_set, needs=("up --repos",)),
             Phase("templates", self.phase_templates, needs=("save --repos",)),
             Phase("up --from", self.phase_up_from, needs=("setup", "save --repos")),
+            Phase("connect from the host", self.phase_connect, needs=("up --repos",)),
             Phase("two sets", self.phase_two_sets, needs=("up --repos", "up --from")),
+            Phase("from the agent", self.phase_from_agent, needs=("up --repos", "up --from")),
+            Phase("isolation", self.phase_isolation, needs=("up --repos", "up --from")),
+            Phase("unknown names", self.phase_unknown_names, needs=("up --repos",)),
             Phase("repeated up", self.phase_repeated_up, needs=("up --repos",)),
             Phase("up --recreate", self.phase_recreate, needs=("up --repos",)),
             Phase("status", self.phase_status, needs=("up --repos",)),

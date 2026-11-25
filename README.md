@@ -550,11 +550,23 @@ status and what the verb promises, and the run ends with a report: every command
 checked, pass or fail, and the output of anything that failed. A failed check does not stop
 the steps that do not depend on it, and whatever the run created is always removed.
 
+It also proves that every address a set reports is usable. For each running set it connects
+from the machine to every address `sandbox SET urls --json` prints: an HTTPS request
+verified against the mkcert CA for web apps and their extra hosts, a login and a query for
+MySQL, a ping for Redis, a TCP connect for anything else, including a service that declares
+no ports and the agent, on a port they listen on. It runs two sets at once and reads each
+set's own data back from MySQL on 3306 and Redis on 6379, repeats the connections from
+inside each agent, checks that a container of one set cannot connect to the other set's
+services, that every address answers again within seconds of `up --recreate`, that the
+names stop resolving after `down`, and that an unknown name under the domain fails fast.
+Names are resolved through the operating system only; the resolver is asked directly just
+to explain a failed check in the report.
+
 It changes the machine it runs on (the resolver configuration, the mkcert CA), so it runs
 only with `SANDBOX_E2E=1`, as a non-root user with passwordless sudo, on Linux with
-systemd-resolved. On a machine that is already set up, add `SANDBOX_E2E_KEEP_SETUP=1`: the
-harness then runs neither `setup` nor `setup --uninstall`, needs no sudo, and uses the
-domain your setup installed. Either way it keeps its sets and templates in a temp directory,
+systemd-resolved or on macOS with OrbStack. On a machine that is already set up, add
+`SANDBOX_E2E_KEEP_SETUP=1`: the harness then runs neither `setup` nor `setup --uninstall`,
+needs no sudo, and uses the domain your setup installed. Either way it keeps its sets and templates in a temp directory,
 never yours.
 
 ```console

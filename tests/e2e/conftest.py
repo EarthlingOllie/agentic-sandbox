@@ -2,11 +2,11 @@
 really changes.
 
 The harness runs only when ``SANDBOX_E2E=1``. It is meant for a throwaway Linux machine
-with systemd-resolved and passwordless sudo (the ``e2e`` GitHub Actions workflow), because
-it does what a user does once and nothing else may: ``sudo sandbox setup`` points the
-machine's lookups under the domain at the resolver and installs the mkcert CA (into the
-system trust store). It ends with ``setup --uninstall``; the mkcert CA is left installed, as
-``--uninstall`` itself leaves it.
+with systemd-resolved and passwordless sudo (the ``e2e`` GitHub Actions workflow), or a Mac
+with OrbStack, because it does what a user does once and nothing else may:
+``sudo sandbox setup`` points the machine's lookups under the domain at the resolver and
+installs the mkcert CA (into the system trust store). It ends with ``setup --uninstall``;
+the mkcert CA is left installed, as ``--uninstall`` itself leaves it.
 
 ``SANDBOX_E2E_KEEP_SETUP=1`` (with ``SANDBOX_E2E=1``) is for a machine that is already set
 up: the harness runs neither ``setup`` nor ``setup --uninstall``, needs no sudo, uses the
@@ -67,8 +67,8 @@ def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
 
 
 def _require_machine() -> None:
-    if sys.platform != "linux":
-        pytest.fail("the walkthrough harness runs on Linux (the macOS path is a manual checklist)")
+    if sys.platform not in ("linux", "darwin"):
+        pytest.fail("the walkthrough harness runs on Linux and on macOS (with OrbStack)")
     if os.geteuid() == 0:
         pytest.fail("run the walkthrough harness as a non-root user (with passwordless sudo)")
     for tool in ("docker", "git", "mkcert", "curl"):
@@ -197,10 +197,11 @@ def machine(tmp_path: Path) -> Machine:
     }
     sandbox = shutil.which("sandbox", path=str(Path(sys.executable).parent))
     assert sandbox is not None, "the sandbox console script is not installed (uv sync)"
-    # Two repos sharing `mysql` (`jobs` ships the init hook), a web app with an extra host,
-    # and a repo without services. `api` sorts first, as the only repo using
-    # `extends: {file: ...}` must.
+    # Two repos sharing `mysql` (`jobs` ships the init hook), `redis` and a service without
+    # ports that listens all the same, a web app with an extra host, and a repo without
+    # services. `api` sorts first, as the only repo using `extends: {file: ...}` must.
     _make_repo(code, "api", "shared-mysql-a", env)
+    _make_repo(code, "cache", "cache-repo", env)
     _make_repo(code, "jobs", "shared-mysql-b", env)
     _make_repo(code, "web", "web-repo", env)
     _make_repo(code, "docs", None, env)

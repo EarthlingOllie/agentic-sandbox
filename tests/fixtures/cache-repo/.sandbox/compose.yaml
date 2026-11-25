@@ -1,0 +1,24 @@
+# Fixture repo for the walkthrough harness: what a set reaches beyond MySQL and a web app.
+# `redis` declares its conventional port, so `urls` lists `redis.<set>.<domain>:6379`.
+# `worker` declares no ports: `urls` lists its bare hostname, and it is reachable there on
+# the port it listens on (9000) like any other container of the set.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  worker:
+    image: python:3.12-alpine
+    command: ["python", "/srv/worker.py"]
+    volumes:
+      - ./worker.py:/srv/worker.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 9000), 2)"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
