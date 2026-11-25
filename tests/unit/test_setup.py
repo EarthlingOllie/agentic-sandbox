@@ -458,8 +458,6 @@ def test_uninstall_when_nothing_is_installed_succeeds(env: Env, root: Path, bin_
 
 def test_the_helper_bundles_constants_mirror_sandboxs_own() -> None:
     from sandbox import config, hosts_block, leases
-    from sandbox.compose import network
 
     assert hosts_block.LOOPBACK == config.LOOPBACK
     assert hosts_block.BLOCK_PREFIX == leases.BLOCK_PREFIX
-    assert hosts_block.TLD == network.TLD

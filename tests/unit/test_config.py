@@ -20,6 +20,7 @@ def test_defaults(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.templates_root == home / ".config" / "sandbox" / "plans"
     assert config.sets_root == home / "sandbox" / "sets"
     assert config.agent is None
+    assert config.domain == "test"
 
 
 def test_default_location_is_read(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,6 +57,17 @@ def test_explicitly_named_missing_file_is_an_error(tmp_path: Path) -> None:
         ("sets_root: relative/dir\n", "sets_root: Value error, must be an absolute path"),
         ("ip_pol: 127.42.0.0/16\n", "ip_pol: Extra inputs are not permitted"),
         ("agent: 3\n", "agent: Input should be a valid dictionary"),
+        ("domain: local\n", "domain: Value error, 'local' is reserved for mDNS"),
+        ("domain: sets.local\n", "domain: Value error, 'sets.local' ends in .local"),
+        ("domain: Sandbox.Test\n", "domain: Value error, 'Sandbox.Test' is not a DNS suffix"),
+        ("domain: .test\n", "domain: Value error, '.test' is not a DNS suffix"),
+        ("domain: test.\n", "domain: Value error, 'test.' is not a DNS suffix"),
+        ("domain: sand_box.test\n", "domain: Value error, 'sand_box.test' is not a DNS suffix"),
+        ("domain: -sandbox.test\n", "domain: Value error, '-sandbox.test' is not a DNS suffix"),
+        ('domain: ""\n', "domain: Value error, '' is not a DNS suffix"),
+        ("domain: 3\n", "domain: Input should be a valid string"),
+        # Too long to leave room for `<service>.<set>.` in a 253-character name.
+        (f"domain: {'.'.join(['a' * 62, 'b' * 62, 'c'])}\n", "is not a DNS suffix"),
         ("- a\n- b\n", "(top level): Input should be a valid dictionary"),
     ],
 )
@@ -77,3 +89,16 @@ def test_invalid_yaml_is_reported(env: Env) -> None:
     result = invoke(["jira-123", "up", "--repos", "api"], FakeGit())
     assert result.exit_code == 1
     assert "invalid YAML" in result.stderr
+
+
+@pytest.mark.parametrize("domain", ["test", "sandbox.test", "dev.sets.example", "x1.a-b.internal"])
+def test_a_dns_suffix_of_one_or_more_labels_is_a_valid_domain(env: Env, domain: str) -> None:
+    with env.config_file.open("a") as config:
+        config.write(f"domain: {domain}\n")
+    env.make_repo_dir("api")
+    git = FakeGit()
+    git.add_repo(env.cwd / "api")
+
+    result = invoke(["jira-123", "up", "--repos", "api"], git)
+
+    assert result.exit_code == 0, result.output

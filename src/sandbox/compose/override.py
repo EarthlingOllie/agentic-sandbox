@@ -30,6 +30,8 @@ OVERRIDE_FILENAME: Final = "override.yaml"
 @dataclass(frozen=True)
 class OverrideContext:
     set_name: str
+    # The config's domain: set hostnames are ``<name>.<set>.<domain>``.
+    domain: str
     set_dir: Path
     repos: list[RepoCompose]
     # The deduplicated services of all repos (see sandbox.compose.dedup).
@@ -68,7 +70,9 @@ def _agent(ctx: OverrideContext) -> dict[str, Any]:
 
 def _network(ctx: OverrideContext) -> dict[str, Any]:
     definitions = {name: s.definition for name, s in ctx.graph.services.items()}
-    return network_fragment(ctx.set_name, definitions, ctx.ips, extra_hostnames(ctx.web_apps))
+    return network_fragment(
+        ctx.set_name, ctx.domain, definitions, ctx.ips, extra_hostnames(ctx.web_apps)
+    )
 
 
 def _init_hooks(ctx: OverrideContext) -> dict[str, Any]:

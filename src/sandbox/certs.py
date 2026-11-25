@@ -1,11 +1,12 @@
-"""Per-set TLS: a ``*.<set>.test`` leaf certificate issued by the machine's mkcert CA.
+"""Per-set TLS: a ``*.<set>.<domain>`` leaf certificate issued by the machine's mkcert CA.
 
 One mkcert CA serves the whole machine (``sudo sandbox setup`` installs it with
 ``mkcert -install``, so the host trusts it). Each set that has a web app gets its own
 wildcard leaf in ``<set dir>/tls/`` (``cert.pem``, ``key.pem``), issued on the first ``up``
 and reused while it still verifies against the CA for the set's hostnames and is not about
-to expire. Containers are given the CA's ``rootCA.pem`` only, never ``rootCA-key.pem``, so
-nothing inside a set can mint certificates the host trusts.
+to expire (so a set whose leaf was issued for another ``domain`` gets a new one). Containers
+are given the CA's ``rootCA.pem`` only, never ``rootCA-key.pem``, so nothing inside a set can
+mint certificates the host trusts.
 
 mkcert is driven through its CLI (:class:`SubprocessMkcert`); unit tests substitute
 ``tests.fakes_certs.FakeMkcert``. Validity is checked in-process with a TLS handshake over
@@ -22,7 +23,6 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Final, Protocol
 
-from sandbox.compose.network import TLD
 from sandbox.errors import SandboxError
 
 ROOT_CA_FILENAME: Final = "rootCA.pem"
@@ -82,8 +82,8 @@ class SetCertificate:
     issued: bool
 
 
-def wildcard(set_name: str) -> str:
-    return f"*.{set_name}.{TLD}"
+def wildcard(set_name: str, domain: str) -> str:
+    return f"*.{set_name}.{domain}"
 
 
 async def root_ca(mkcert: Mkcert) -> Path:
@@ -95,7 +95,7 @@ async def root_ca(mkcert: Mkcert) -> Path:
 
 
 async def ensure_certificate(
-    mkcert: Mkcert, ca: Path, set_dir: Path, set_name: str, hostnames: Sequence[str]
+    mkcert: Mkcert, ca: Path, set_dir: Path, set_name: str, domain: str, hostnames: Sequence[str]
 ) -> SetCertificate:
     """The set's leaf certificate: reused while valid for ``hostnames``, else (re)issued."""
     directory = set_dir / TLS_DIRNAME
@@ -103,9 +103,9 @@ async def ensure_certificate(
     if certificate_valid(cert, key, ca, hostnames):
         return SetCertificate(directory, cert, key, issued=False)
     directory.mkdir(parents=True, exist_ok=True)
-    await mkcert.issue(cert, key, [wildcard(set_name)])
+    await mkcert.issue(cert, key, [wildcard(set_name, domain)])
     # The web app reads the key as whatever user its image runs as. It is a leaf for
-    # `*.<set>.test` on loopback only; the CA key never leaves mkcert's CAROOT.
+    # `*.<set>.<domain>` on loopback only; the CA key never leaves mkcert's CAROOT.
     key.chmod(0o644)
     if not certificate_valid(cert, key, ca, hostnames):
         raise SandboxError(

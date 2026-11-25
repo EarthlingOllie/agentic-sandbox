@@ -3,16 +3,16 @@
 A web app is a repo's service marked ``x-sandbox: {web: true}`` and named after the repo.
 Its service gets:
 
-- port 443 published on its own leased IP (its hostname ``<repo>.<set>.test`` is the
+- port 443 published on its own leased IP (its hostname ``<repo>.<set>.<domain>`` is the
   service's set hostname, so ``sandbox.compose.network`` already aliases it);
 - ``net.ipv4.ip_unprivileged_port_start=0``, so the app listens on 443 as non-root;
 - the set's leaf certificate read-only at ``/sandbox/tls/`` (``cert.pem``, ``key.pem``);
 - ``WORKTREE`` (its repo's checkout in the set directory: the agent's clone) and
   ``APP_URL`` (``https://<hostname>``) in its environment, and nothing else;
-- with ``hosts: [admin, portal]``, the extra hostnames ``admin.<set>.test`` and
-  ``portal.<set>.test`` on the same container and IP: ``sandbox.compose.network`` aliases
+- with ``hosts: [admin, portal]``, the extra hostnames ``admin.<set>.<domain>`` and
+  ``portal.<set>.<domain>`` on the same container and IP: ``sandbox.compose.network`` aliases
   them (from :func:`extra_hostnames`), the hosts block lists them, and the set's
-  ``*.<set>.test`` certificate covers them (each is one label deep);
+  ``*.<set>.<domain>`` certificate covers them (each is one label deep);
 - with ``vite: 5173``, that port published on its IP too, and ``VITE_HMR_HOST`` (its
   hostname) in its environment for the app's ``server.hmr.host``.
 
@@ -41,20 +41,22 @@ class WebApp:
     # The Compose service: always named after the repo.
     service: str
     set_name: str
+    # The config's domain: the app is served at ``https://<repo>.<set>.<domain>``.
+    domain: str
     # The repo's checkout in the set directory (the agent's clone).
     worktree: Path
-    # Extra one-label hosts (``admin`` -> ``admin.<set>.test``) on the same container and IP.
+    # Extra one-label hosts (``admin`` -> ``admin.<set>.<domain>``) on the same container and IP.
     hosts: tuple[str, ...] = ()
     # The Vite dev server's port, if any: published on the app's IP, HMR host set.
     vite: int | None = None
 
     @property
     def hostname(self) -> str:
-        return hostname(self.service, self.set_name)
+        return hostname(self.service, self.set_name, self.domain)
 
     @property
     def extra_hostnames(self) -> tuple[str, ...]:
-        return tuple(hostname(host, self.set_name) for host in self.hosts)
+        return tuple(hostname(host, self.set_name, self.domain) for host in self.hosts)
 
     @property
     def hostnames(self) -> tuple[str, ...]:

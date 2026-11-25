@@ -199,12 +199,13 @@ async def _compose_up(ctx: UpContext) -> None:
     override = write_override(
         OverrideContext(
             ctx.set_name,
+            ctx.config.domain,
             ctx.set_dir,
             ctx.repo_composes,
             ctx.graph,
             ctx.plan.sources(),
             ctx.plan.agent,
-            service_ips(ctx.set_name, ctx.graph, ctx.lease),
+            service_ips(ctx.set_name, ctx.config.domain, ctx.graph, ctx.lease),
             web_apps=ctx.web_apps,
             root_ca=ctx.root_ca,
             tls_dir=ctx.certificate.directory if ctx.certificate else None,
@@ -335,7 +336,13 @@ class Provisioner:
             ctx.project,
             ctx.services,
             ctx.action,
-            bindings(ctx.set_name, ctx.graph, ctx.lease, extra_hostnames(ctx.web_apps)),
+            bindings(
+                ctx.set_name,
+                ctx.config.domain,
+                ctx.graph,
+                ctx.lease,
+                extra_hostnames(ctx.web_apps),
+            ),
             [s.note() for s in synced if not s.synced],
         )
 

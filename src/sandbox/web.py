@@ -1,8 +1,8 @@
 """Web apps: the ``x-sandbox: {web: true}`` service of a repo, served on HTTPS.
 
 A repo marks at most one service as its web app, and that service is named after the repo,
-so its URL is predictable: ``https://<repo>.<set>.test``. It may add extra one-label hosts
-(``hosts: [admin, portal]``, served as ``admin.<set>.test`` on the same container and IP, so
+so its URL is predictable: ``https://<repo>.<set>.<domain>``. It may add extra one-label hosts
+(``hosts: [admin, portal]``, served as ``admin.<set>.<domain>`` on the same container and IP, so
 the set's wildcard certificate covers them) and a Vite dev server port (``vite: 5173``).
 Validation (``check_web_apps``) reads each repo's own compose file, refuses anything else,
 refuses a hostname used twice in the set (extra hosts included), and checks the machine's
@@ -28,7 +28,7 @@ from sandbox.pipeline import UpContext
 from sandbox.yamlio import read_yaml
 
 X_SANDBOX: Final = "x-sandbox"
-# One DNS label: the set's `*.<set>.test` certificate covers exactly one label.
+# One DNS label: the set's `*.<set>.<domain>` certificate covers exactly one label.
 _LABEL: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _MAX_PORT: Final = 65535
 
@@ -42,16 +42,18 @@ class _WebService:
 
 def find_web_apps(ctx: UpContext) -> list[WebApp]:
     """Each repo's web app (repo-name order), or fail with every problem found."""
-    return web_apps(ctx.set_name, ctx.set_dir, ctx.repo_composes)
+    return web_apps(ctx.set_name, ctx.config.domain, ctx.set_dir, ctx.repo_composes)
 
 
-def web_apps(set_name: str, set_dir: Path, repo_composes: Sequence[RepoCompose]) -> list[WebApp]:
+def web_apps(
+    set_name: str, domain: str, set_dir: Path, repo_composes: Sequence[RepoCompose]
+) -> list[WebApp]:
     """Each repo's web app (repo-name order), or fail with every problem found."""
     errors: list[str] = []
     found: list[WebApp] = []
     for repo in sorted(repo_composes, key=lambda rc: rc.repo):
         try:
-            service = _web_service(repo)
+            service = _web_service(repo, domain)
         except SandboxError as exc:
             errors.append(str(exc))
             continue
@@ -61,6 +63,7 @@ def web_apps(set_name: str, set_dir: Path, repo_composes: Sequence[RepoCompose])
                     repo.repo,
                     service.name,
                     set_name,
+                    domain,
                     set_dir / repo.repo,
                     hosts=service.hosts,
                     vite=service.vite,
@@ -71,7 +74,7 @@ def web_apps(set_name: str, set_dir: Path, repo_composes: Sequence[RepoCompose])
     return found
 
 
-def _web_service(repo: RepoCompose) -> _WebService | None:
+def _web_service(repo: RepoCompose, domain: str) -> _WebService | None:
     document = read_yaml(repo.file)
     services = _mapping(_mapping(document).get("services"))
     marked: list[str] = []
@@ -103,7 +106,7 @@ def _web_service(repo: RepoCompose) -> _WebService | None:
     if service != repo.repo:
         raise SandboxError(
             f"{repo.repo}: {repo.file}: web service {service!r} must be named after the repo "
-            f"({repo.repo!r}), so it is served at https://{repo.repo}.<set>.test"
+            f"({repo.repo!r}), so it is served at https://{repo.repo}.<set>.{domain}"
         )
     if "network_mode" in _mapping(services[service]):
         raise SandboxError(
@@ -113,11 +116,13 @@ def _web_service(repo: RepoCompose) -> _WebService | None:
     where = f"{repo.repo}: {repo.file}: services.{service}.{X_SANDBOX}"
     extension = extensions[service]
     return _WebService(
-        service, _extra_hosts(where, extension.get("hosts")), _vite(where, extension.get("vite"))
+        service,
+        _extra_hosts(where, extension.get("hosts"), domain),
+        _vite(where, extension.get("vite")),
     )
 
 
-def _extra_hosts(where: str, value: object) -> tuple[str, ...]:
+def _extra_hosts(where: str, value: object, domain: str) -> tuple[str, ...]:
     if value is None:
         return ()
     if not isinstance(value, list) or not all(
@@ -130,7 +135,7 @@ def _extra_hosts(where: str, value: object) -> tuple[str, ...]:
         raise SandboxError(
             "\n".join(
                 f"{where}.hosts: extra host {host!r} must be a single DNS label (lowercase "
-                "letters, digits and inner hyphens), so the set's *.<set>.test certificate "
+                f"letters, digits and inner hyphens), so the set's *.<set>.{domain} certificate "
                 "covers it"
                 for host in bad
             )
@@ -154,7 +159,7 @@ def _vite(where: str, value: object) -> int | None:
 
 
 def hostname_claims(
-    set_name: str, graph: ServiceGraph, web_apps: Sequence[WebApp]
+    set_name: str, domain: str, graph: ServiceGraph, web_apps: Sequence[WebApp]
 ) -> dict[str, list[str]]:
     """Every hostname in the set -> what claims it (a web app, or a service and its repos)."""
     claims: dict[str, list[str]] = defaultdict(list)
@@ -168,7 +173,9 @@ def hostname_claims(
         app = apps.get(name)
         others = [repo for repo in service.repos if app is None or repo != app.repo]
         if others:
-            claims[hostname(name, set_name)].append(f"service {name!r} of repo {', '.join(others)}")
+            claims[hostname(name, set_name, domain)].append(
+                f"service {name!r} of repo {', '.join(others)}"
+            )
     return dict(claims)
 
 
@@ -189,13 +196,16 @@ def check_hostnames(set_name: str, claims: Mapping[str, Sequence[str]]) -> None:
 async def check_web_apps(ctx: UpContext) -> None:
     """Validation: web apps well-formed, hostnames unique, and the mkcert CA present."""
     ctx.web_apps = find_web_apps(ctx)
-    check_hostnames(ctx.set_name, hostname_claims(ctx.set_name, ctx.graph, ctx.web_apps))
+    check_hostnames(
+        ctx.set_name,
+        hostname_claims(ctx.set_name, ctx.config.domain, ctx.graph, ctx.web_apps),
+    )
     if ctx.web_apps:
         ctx.root_ca = await root_ca(ctx.mkcert)
 
 
 async def issue_certificate(ctx: UpContext) -> None:
-    """Provision: the set's ``*.<set>.test`` leaf, reused while valid. Kept on rollback."""
+    """Provision: the set's ``*.<set>.<domain>`` leaf, reused while valid. Kept on rollback."""
     if not ctx.web_apps or ctx.root_ca is None:
         return
     ctx.certificate = await ensure_certificate(
@@ -203,6 +213,7 @@ async def issue_certificate(ctx: UpContext) -> None:
         ctx.root_ca,
         ctx.set_dir,
         ctx.set_name,
+        ctx.config.domain,
         [host for app in ctx.web_apps for host in app.hostnames],
     )
 

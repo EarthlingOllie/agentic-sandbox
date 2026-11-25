@@ -77,8 +77,8 @@ def web_repo(env: Env, caroot: Path) -> Iterator[Path]:
     compose_down()
 
 
-def web_ip(output: str) -> str:
-    match = re.search(rf"{re.escape(HOST)}  (\S+)  ", output)
+def web_ip(output: str, host: str = HOST) -> str:
+    match = re.search(rf"{re.escape(host)}  (\S+)  ", output)
     assert match, output
     return match.group(1)
 
@@ -135,3 +135,41 @@ def test_web_app_is_served_over_trusted_https(env: Env, web_repo: Path, caroot: 
     assert again.exit_code == 0, again.output
     assert cert.read_bytes() == before
     assert curl_from_host(web_ip(again.stdout), caroot) == expected
+
+
+def test_web_app_is_served_under_a_non_default_domain(
+    env: Env, web_repo: Path, caroot: Path
+) -> None:
+    """With ``domain: sandbox.test`` the app, its extra host and the set's certificate all
+    move to ``<name>.<set>.sandbox.test``; the certificate issued for ``.test`` is replaced."""
+    first = invoke([SET, "up", "--repos", "web"], SubprocessGit(), SubprocessCompose())
+    assert first.exit_code == 0, first.output
+    cert = env.set_dir(SET) / "tls" / "cert.pem"
+    issued_for_test = cert.read_bytes()
+    assert invoke([SET, "down"], SubprocessGit(), SubprocessCompose()).exit_code == 0
+    with env.config_file.open("a") as config:
+        config.write("domain: sandbox.test\n")
+    host, admin = f"web.{SET}.sandbox.test", f"admin.{SET}.sandbox.test"
+
+    result = invoke([SET, "up"], SubprocessGit(), SubprocessCompose())
+
+    assert result.exit_code == 0, result.output
+    ip = web_ip(result.stdout, host)
+    expected = {
+        "user": 65534,
+        "WORKTREE": str(env.set_dir(SET) / "web"),
+        "APP_URL": f"https://{host}",
+    }
+    # A new certificate, for the new domain: the handshakes below verify the hostname.
+    assert cert.read_bytes() != issued_for_test
+    # From the host, at the hostname under the configured domain (no -k).
+    assert curl_from_host(ip, caroot, host) == expected
+    assert curl_from_host(ip, caroot, admin) == expected
+    # From the agent: the set network resolves the same names.
+    assert json.loads(in_agent("curl", "-sS", "--fail", f"https://{host}/")) == expected
+    assert json.loads(in_agent("curl", "-sS", "--fail", f"https://{admin}/")) == expected
+    # The hosts block lists the set's names under the domain, and only those.
+    hosts = env.hosts_file.read_text()
+    assert f"{ip}\t{host}\n" in hosts
+    assert f"{ip}\t{admin}\n" in hosts
+    assert f"web.{SET}.test" not in hosts

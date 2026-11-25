@@ -3,13 +3,16 @@
 ``sudo sandbox setup`` installs it root-owned at ``/usr/local/bin/sandbox-hosts``, with a
 NOPASSWD sudoers rule scoped to that file, and ``sandbox`` runs it through ``sudo -n``::
 
-    sandbox-hosts write SET BLOCK HOSTNAME=IP...   # make SET's block hold exactly these
+    sandbox-hosts write [--domain DOMAIN] SET BLOCK HOSTNAME=IP...
+                                                   # make SET's block hold exactly these
     sandbox-hosts remove SET                       # drop SET's block
 
 It always edits ``/etc/hosts`` (the path is not an argument, so a caller cannot aim root at
 another file), rewrites only the named set's ``# sandbox:<set>`` block under an exclusive
 ``flock``, and refuses any IP outside the set's loopback /24 and any name that is not a
-``<label>.<set>.test`` hostname (:func:`sandbox.hosts_block.check_entries`).
+``<label>.<set>.<domain>`` hostname (:func:`sandbox.hosts_block.check_entries`). The domain
+is ``test`` unless ``--domain`` names the config's (a DNS suffix, never ``local``); whatever
+it is, a name still has to sit under the set's own label and point into loopback.
 
 The installed copy runs under the system's Python with ``-I -S`` from a root-owned bundle
 (``sandbox.setup``), so this module imports the standard library and stdlib-only sandbox
@@ -28,7 +31,7 @@ from typing import Final, NoReturn
 
 from sandbox.errors import SandboxError
 from sandbox.hosts_block import SYSTEM_HOSTS_FILE, check_entries, update_hosts_file
-from sandbox.names import validate_set_name
+from sandbox.names import DEFAULT_DOMAIN, validate_set_name
 
 # Root's lock, beside other system run-time state (/var/run exists on Linux and macOS).
 SYSTEM_LOCK_FILE: Final = Path("/var/run/sandbox-hosts.lock")
@@ -43,6 +46,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="sandbox-hosts", description=__doc__)
     verbs = parser.add_subparsers(dest="verb", required=True)
     write = verbs.add_parser("write", help="make the set's block hold exactly these entries")
+    write.add_argument(
+        "--domain", default=DEFAULT_DOMAIN, help="the domain set hostnames end in (default: test)"
+    )
     write.add_argument("set_name", metavar="SET")
     write.add_argument("block", metavar="BLOCK", help="the set's loopback /24")
     write.add_argument("entries", metavar="HOSTNAME=IP", nargs="+")
@@ -80,7 +86,7 @@ def run(
             except (AddressValueError, NetmaskValueError, ValueError) as exc:
                 raise SandboxError(f"block {args.block!r}: {exc}") from exc
             entries = _entries([str(entry) for entry in args.entries])
-            check_entries(set_name, block, entries)
+            check_entries(set_name, block, entries, str(args.domain))
         else:
             entries = {}
         asyncio.run(update_hosts_file(hosts_path, lock_path, set_name, entries))

@@ -43,7 +43,8 @@ class UrlsReader:
         loaded = [load_repo_compose(name, spec.source) for name, spec in sorted(plan.repos.items())]
         repos = [repo for repo in loaded if repo is not None]
         graph = await resolve_services(self._compose, project_name(set_name), repos)
-        apps = web_apps(set_name, set_dir, repos)
+        domain = self._config.domain
+        apps = web_apps(set_name, domain, set_dir, repos)
         lease = lease_store(self._config).read(set_name)
         state = await self._state(set_name)
         return SetUrls(
@@ -51,7 +52,9 @@ class UrlsReader:
             state=state,
             running=state is SetStateName.RUNNING,
             web=[url for app in apps for url in _web_urls(app, lease)],
-            services=_service_addresses(set_name, graph, {app.service for app in apps}, lease),
+            services=_service_addresses(
+                set_name, domain, graph, {app.service for app in apps}, lease
+            ),
         )
 
     async def _state(self, set_name: str) -> SetStateName:
@@ -76,13 +79,17 @@ def _web_urls(app: WebApp, lease: SetLease | None) -> list[WebUrl]:
 
 
 def _service_addresses(
-    set_name: str, graph: ServiceGraph, web_services: set[str], lease: SetLease | None
+    set_name: str,
+    domain: str,
+    graph: ServiceGraph,
+    web_services: set[str],
+    lease: SetLease | None,
 ) -> list[ServiceAddress]:
     found: list[ServiceAddress] = []
     for name in graph.names():
         if name in web_services:
             continue
-        host = hostname(name, set_name)
+        host = hostname(name, set_name, domain)
         ip = _ip(lease, host)
         ports = container_ports(name, graph.services[name].definition)
         for address in [_address(host, port) for port in ports] or [host]:

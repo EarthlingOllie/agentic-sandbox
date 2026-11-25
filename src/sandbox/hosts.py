@@ -13,10 +13,11 @@ Two writers share that logic:
 - :class:`DirectHostsWriter` (``hosts_file`` set in the config): writes that file itself.
   Tests point it at a temp file.
 
-Both refuse an IP outside the set's /24 and a name outside the set's ``.test`` domain
-(:func:`check_entries`), so the helper cannot be abused to hijack a real domain. The block
-logic itself lives in ``sandbox.hosts_block`` (standard library only), which the installed
-helper bundles.
+Both refuse an IP outside the set's /24 and a name outside the set's own
+``<set>.<domain>`` (:func:`check_entries`; the config's ``domain``, which the helper is told
+with ``--domain`` when it is not ``test``), so the helper can only ever point a name under a
+set's own label at loopback. The block logic itself lives in ``sandbox.hosts_block``
+(standard library only), which the installed helper bundles.
 """
 
 import asyncio
@@ -40,7 +41,7 @@ from sandbox.hosts_block import (
     replace_block,
     update_hosts_file,
 )
-from sandbox.names import validate_set_name
+from sandbox.names import DEFAULT_DOMAIN, validate_set_name
 from sandbox.pipeline import UpContext
 
 __all__ = [
@@ -79,12 +80,13 @@ class HostsWriter(Protocol):
 class DirectHostsWriter:
     """Writes the hosts file itself (``hosts_file`` set in the config)."""
 
-    def __init__(self, path: Path, lock_path: Path) -> None:
+    def __init__(self, path: Path, lock_path: Path, domain: str = DEFAULT_DOMAIN) -> None:
         self._path = path
         self._lock_path = lock_path
+        self._domain = domain
 
     async def write(self, set_name: str, block: IPv4Network, entries: Entries) -> None:
-        check_entries(set_name, block, entries)
+        check_entries(set_name, block, entries, self._domain)
         await update_hosts_file(self._path, self._lock_path, set_name, entries)
 
     async def remove(self, set_name: str) -> None:
@@ -115,17 +117,23 @@ class HelperHostsWriter:
         runner: Runner = run_command,
         helper: str = HELPER,
         path: Path = SYSTEM_HOSTS_FILE,
+        domain: str = DEFAULT_DOMAIN,
     ) -> None:
         self._runner = runner
         self._prefix = ["sudo", "-n", helper]
         self._path = path  # read (unprivileged) only to skip sudo when nothing would change
+        self._domain = domain
 
     async def write(self, set_name: str, block: IPv4Network, entries: Entries) -> None:
-        check_entries(set_name, block, entries)  # fail with the same message without sudo
+        # Fail with the same message without sudo.
+        check_entries(set_name, block, entries, self._domain)
         if self._unchanged(set_name, entries):
             return
         pairs = [f"{name}={ip}" for name, ip in sorted(entries.items())]
-        await self._run(["write", set_name, str(block), *pairs])
+        # The default domain is the helper's own default: left out, so a helper installed
+        # before `--domain` existed keeps working for it.
+        domain = [] if self._domain == DEFAULT_DOMAIN else ["--domain", self._domain]
+        await self._run(["write", *domain, set_name, str(block), *pairs])
 
     async def remove(self, set_name: str) -> None:
         validate_set_name(set_name)
@@ -154,10 +162,11 @@ class HelperHostsWriter:
             )
 
 
-def hosts_writer(config: Config) -> HostsWriter:
+def hosts_writer(config: Config, runner: Runner = run_command) -> HostsWriter:
+    """The writer the config selects; ``runner`` runs the helper's ``sudo`` command line."""
     if config.hosts_file is not None:
-        return DirectHostsWriter(config.hosts_file, config.lock_dir / "hosts.lock")
-    return HelperHostsWriter()
+        return DirectHostsWriter(config.hosts_file, config.lock_dir / "hosts.lock", config.domain)
+    return HelperHostsWriter(runner, domain=config.domain)
 
 
 # --- up steps --------------------------------------------------------------------------
@@ -169,7 +178,9 @@ def _writer(ctx: UpContext) -> HostsWriter:
 
 async def write_hosts_block(ctx: UpContext) -> None:
     """Post-up step: the set's block holds exactly its current hostnames and IPs."""
-    found = bindings(ctx.set_name, ctx.graph, ctx.lease, extra_hostnames(ctx.web_apps))
+    found = bindings(
+        ctx.set_name, ctx.config.domain, ctx.graph, ctx.lease, extra_hostnames(ctx.web_apps)
+    )
     if ctx.lease is None or not found:
         await _writer(ctx).remove(ctx.set_name)  # a no-op unless services left the plan
         return

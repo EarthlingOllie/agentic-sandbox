@@ -16,7 +16,7 @@ class _Model(BaseModel):
 
 
 class WebUrl(_Model):
-    # ``https://<host>.<set>.test``, or ``...:<port>`` for a Vite dev server.
+    # ``https://<host>.<set>.<domain>``, or ``...:<port>`` for a Vite dev server.
     url: str
     service: str
     # None when the set has never leased its IPs.
@@ -24,7 +24,7 @@ class WebUrl(_Model):
 
 
 class ServiceAddress(_Model):
-    # ``<service>.<set>.test:<port>`` (``/udp`` appended for UDP), or the bare hostname for
+    # ``<service>.<set>.<domain>:<port>`` (``/udp`` appended for UDP), or the bare hostname for
     # a service that publishes no port.
     address: str
     service: str

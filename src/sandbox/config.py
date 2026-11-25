@@ -14,6 +14,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validat
 
 from sandbox.compose.agent import AgentOverride
 from sandbox.errors import SandboxError
+from sandbox.names import DEFAULT_DOMAIN, validate_domain
 from sandbox.yamlio import read_yaml, validate_file
 
 CONFIG_ENV_VAR: Final = "SANDBOX_CONFIG"
@@ -73,6 +74,12 @@ class Config(BaseModel):
         description="Unset (the default): each set's hosts block goes into /etc/hosts through "
         "`sudo -n sandbox-hosts`. A path: the block is written to that file directly, without "
         "sudo (tests and unprivileged setups).",
+    )
+    domain: Annotated[str, AfterValidator(validate_domain)] = Field(
+        default=DEFAULT_DOMAIN,
+        strict=True,
+        description="The DNS suffix every set hostname ends in: `<name>.<set>.<domain>`. "
+        "One or more labels; `local` (mDNS) is refused.",
     )
     agent: AgentOverride | None = Field(
         default=None,

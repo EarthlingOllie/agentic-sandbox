@@ -49,7 +49,7 @@ async def lease_ips(ctx: UpContext) -> None:
     """Lease the set's /24 and one IP per service hostname (kept if already leased)."""
     if not ctx.graph.services:
         return
-    hostnames = [hostname(name, ctx.set_name) for name in ctx.graph.names()]
+    hostnames = [hostname(name, ctx.set_name, ctx.config.domain) for name in ctx.graph.names()]
     store = lease_store(ctx.config, ctx.alias_blocks)
     # Under the set's up lock, so no other process creates this set's lease meanwhile.
     existed = store.read(ctx.set_name) is not None
@@ -58,20 +58,18 @@ async def lease_ips(ctx: UpContext) -> None:
 
 
 def service_ips(
-    set_name: str, graph: ServiceGraph, lease: SetLease | None
+    set_name: str, domain: str, graph: ServiceGraph, lease: SetLease | None
 ) -> dict[str, IPv4Address]:
     """Service name -> its leased IP."""
     if lease is None:
         return {}
-    return {
-        name: lease.ips[hostname(name, set_name)]
-        for name in graph.names()
-        if hostname(name, set_name) in lease.ips
-    }
+    hostnames = {name: hostname(name, set_name, domain) for name in graph.names()}
+    return {name: lease.ips[host] for name, host in hostnames.items() if host in lease.ips}
 
 
 def bindings(
     set_name: str,
+    domain: str,
     graph: ServiceGraph,
     lease: SetLease | None,
     extra_hostnames: Mapping[str, Sequence[str]] | None = None,
@@ -79,9 +77,9 @@ def bindings(
     """Each service's hostname, then its extra hostnames (service name -> names, e.g. a web
     app's ``hosts``), on the service's IP with its ports."""
     found: list[Binding] = []
-    for name, ip in service_ips(set_name, graph, lease).items():
+    for name, ip in service_ips(set_name, domain, graph, lease).items():
         ports = tuple(container_ports(name, graph.services[name].definition))
-        for host in (hostname(name, set_name), *(extra_hostnames or {}).get(name, ())):
+        for host in (hostname(name, set_name, domain), *(extra_hostnames or {}).get(name, ())):
             found.append(Binding(host, ip, ports))
     return found
 

@@ -80,7 +80,8 @@ class StatusReader:
         containers = observed.containers.get(set_name, [])
         expected = self._expected(plan) if plan is not None else set[str]()
         names = sorted(expected | {c.service for c in containers})
-        services = [_service(set_name, name, containers, lease) for name in names]
+        domain = self._config.domain
+        services = [_service(set_name, domain, name, containers, lease) for name in names]
         repos = await self._repos(set_name, plan) if plan is not None else []
         return SetStatus(
             name=set_name,
@@ -182,12 +183,12 @@ class StatusReader:
 
 
 def _service(
-    set_name: str, service: str, containers: list[Container], lease: SetLease | None
+    set_name: str, domain: str, service: str, containers: list[Container], lease: SetLease | None
 ) -> ServiceStatus:
     own = [c for c in containers if c.service == service]
     # With several containers for one service, a running one speaks for it.
     container = next((c for c in own if c.state == RUNNING), own[0] if own else None)
-    host = None if service == AGENT_SERVICE else hostname(service, set_name)
+    host = None if service == AGENT_SERVICE else hostname(service, set_name, domain)
     return ServiceStatus(
         name=service,
         state=container.state if container else MISSING,

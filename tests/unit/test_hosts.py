@@ -72,6 +72,42 @@ def test_helper_writer_runs_sandbox_hosts_non_interactively(hosts: Path) -> None
     assert hosts.read_text() == OTHER
 
 
+def test_helper_writer_names_a_non_default_domain_to_the_helper(hosts: Path) -> None:
+    sudo = SudoHelper(hosts)
+    writer = HelperHostsWriter(sudo, path=hosts, domain="sandbox.test")
+    entries = {"mysql.jira-123.sandbox.test": IPv4Address("127.42.0.1")}
+
+    asyncio.run(writer.write("jira-123", BLOCK, entries))
+
+    assert sudo.calls == [
+        ["sudo", "-n", "/usr/local/bin/sandbox-hosts", "write", "--domain", "sandbox.test",
+         "jira-123", "127.42.0.0/24", "mysql.jira-123.sandbox.test=127.42.0.1"],
+    ]  # fmt: skip
+    assert "127.42.0.1\tmysql.jira-123.sandbox.test\n" in hosts.read_text()
+    # A name under the default domain is no longer one of this set's.
+    with pytest.raises(SandboxError, match=r"does not end in \.sandbox\.test"):
+        asyncio.run(writer.write("jira-123", BLOCK, ENTRIES))
+
+
+def test_the_configured_domain_reaches_the_helper(tmp_path: Path) -> None:
+    sudo_calls: list[list[str]] = []
+
+    async def sudo(argv: Sequence[str]) -> tuple[int, str]:
+        sudo_calls.append(list(argv))
+        return 0, ""
+
+    writer = hosts_writer(Config(state_dir=tmp_path, domain="sandbox.test"), sudo)
+
+    asyncio.run(
+        writer.write("jira-123", BLOCK, {"mysql.jira-123.sandbox.test": IPv4Address("127.42.0.1")})
+    )
+
+    assert sudo_calls == [
+        ["sudo", "-n", "/usr/local/bin/sandbox-hosts", "write", "--domain", "sandbox.test",
+         "jira-123", "127.42.0.0/24", "mysql.jira-123.sandbox.test=127.42.0.1"],
+    ]  # fmt: skip
+
+
 def test_helper_writer_skips_sudo_when_nothing_would_change(hosts: Path) -> None:
     sudo = SudoHelper(hosts)
     writer = HelperHostsWriter(sudo, path=hosts)

@@ -8,7 +8,6 @@ standard library only and stay importable on Python 3.9 (macOS's ``/usr/bin/pyth
 
 from __future__ import annotations
 
-import re
 import shutil
 from collections.abc import Mapping
 from ipaddress import IPv4Address, IPv4Network
@@ -17,18 +16,15 @@ from typing import Final
 
 from sandbox.errors import SandboxError
 from sandbox.locking import file_lock
-from sandbox.names import validate_set_name
+from sandbox.names import DEFAULT_DOMAIN, DNS_LABEL, validate_domain, validate_set_name
 
 SYSTEM_HOSTS_FILE: Final = Path("/etc/hosts")
 # Where `sudo sandbox setup` installs the helper; the sudoers rule names this exact path.
 HELPER_PATH: Final = Path("/usr/local/bin/sandbox-hosts")
-# Mirrors of sandbox.config.LOOPBACK, sandbox.leases.BLOCK_PREFIX and
-# sandbox.compose.network.TLD, kept here so the helper bundle needs nothing else.
+# Mirrors of sandbox.config.LOOPBACK and sandbox.leases.BLOCK_PREFIX, kept here so the
+# helper bundle needs nothing else.
 LOOPBACK: Final = IPv4Network("127.0.0.0/8")
 BLOCK_PREFIX: Final = 24
-TLD: Final = "test"
-# One lowercase DNS label: letters, digits and inner hyphens.
-_LABEL: Final = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 # hostname -> IP
 Entries = Mapping[str, IPv4Address]
@@ -42,20 +38,27 @@ def block_end(set_name: str) -> str:
     return f"# end sandbox:{set_name}"
 
 
-def check_entries(set_name: str, block: IPv4Network, entries: Entries) -> None:
-    """Refuse anything but the set's own loopback /24 and ``<label>.<set>.test`` names."""
+def check_entries(
+    set_name: str, block: IPv4Network, entries: Entries, domain: str = DEFAULT_DOMAIN
+) -> None:
+    """Refuse anything but the set's own loopback /24 and ``<label>.<set>.<domain>`` names
+    (``domain`` is the config's; it must itself be a valid one)."""
     validate_set_name(set_name)
+    try:
+        validate_domain(domain)
+    except ValueError as exc:
+        raise SandboxError(f"refusing hosts entries for set {set_name!r}: domain {exc}") from exc
     problems: list[str] = []
     if block.prefixlen != BLOCK_PREFIX or not block.subnet_of(LOOPBACK):
         problems.append(f"block {block} is not a loopback /{BLOCK_PREFIX}")
-    domain = f".{set_name}.{TLD}"
+    suffix = f".{set_name}.{domain}"
     for name, ip in sorted(entries.items()):
-        if not name.endswith(f".{TLD}"):
-            problems.append(f"{name!r} does not end in .{TLD}")
-        elif not name.endswith(domain) or not all(
-            _LABEL.fullmatch(label) for label in name[: -len(domain)].split(".")
+        if not name.endswith(f".{domain}"):
+            problems.append(f"{name!r} does not end in .{domain}")
+        elif not name.endswith(suffix) or not all(
+            DNS_LABEL.fullmatch(label) for label in name[: -len(suffix)].split(".")
         ):
-            problems.append(f"{name!r} is not a hostname under {domain[1:]}")
+            problems.append(f"{name!r} is not a hostname under {suffix[1:]}")
         if ip not in block or ip in (block.network_address, block.broadcast_address):
             problems.append(f"{ip} ({name}) is outside the set's block {block}")
     if problems:

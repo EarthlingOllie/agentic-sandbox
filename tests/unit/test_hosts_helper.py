@@ -78,6 +78,39 @@ def test_write_refuses_entries_outside_the_set(
     assert hosts.read_text() == OTHER
 
 
+def test_write_accepts_hostnames_under_the_domain_it_is_given(hosts: Path) -> None:
+    status = helper(
+        hosts, "write", "--domain", "sandbox.test", "jira-123", "127.42.0.0/24",
+        "mysql.jira-123.sandbox.test=127.42.0.1",
+    )  # fmt: skip
+
+    assert status == 0
+    assert hosts.read_text() == (
+        OTHER
+        + "# sandbox:jira-123\n127.42.0.1\tmysql.jira-123.sandbox.test\n# end sandbox:jira-123\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("domain", "entry", "reason"),
+    [
+        ("sandbox.test", "mysql.jira-123.test=127.42.0.1", "does not end in .sandbox.test"),
+        ("sandbox.test", "mysql.other.sandbox.test=127.42.0.1", "under jira-123.sandbox.test"),
+        ("sandbox.test", "mysql.jira-123.sandbox.test=8.8.8.8", "outside the set's block"),
+        ("local", "mysql.jira-123.local=127.42.0.1", "reserved for mDNS"),
+        ("Not/A.Domain", "mysql.jira-123.test=127.42.0.1", "is not a DNS suffix"),
+    ],
+)
+def test_write_refuses_entries_outside_the_set_under_another_domain(
+    hosts: Path, capsys: pytest.CaptureFixture[str], domain: str, entry: str, reason: str
+) -> None:
+    status = helper(hosts, "write", "--domain", domain, "jira-123", "127.42.0.0/24", entry)
+
+    assert status != 0
+    assert reason in capsys.readouterr().err
+    assert hosts.read_text() == OTHER
+
+
 def test_an_invalid_set_name_is_refused(hosts: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert helper(hosts, "remove", "../etc") != 0
     assert "invalid set name" in capsys.readouterr().err

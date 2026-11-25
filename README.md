@@ -434,6 +434,7 @@ the [macOS release checklist](docs/release-checklist-macos.md).
 optional; unknown keys and bad values fail with field-level errors.
 
 ```yaml
+domain: test                      # set hostnames are <name>.<set>.<domain>
 ip_pool: 127.42.0.0/16            # loopback range; each set leases one /24
 templates_root: ~/.config/sandbox/plans
 sets_root: ~/sandbox/sets
@@ -441,6 +442,14 @@ state_dir: ~/.local/state/sandbox # lock files and other cross-process host stat
 hosts_file: null                  # unset: /etc/hosts via `sudo -n sandbox-hosts` (see Hosts file)
 agent: null                       # default agent override (see Agent overrides)
 ```
+
+`domain` is the DNS suffix every set hostname ends in. This README writes hostnames with the
+default, `test` (`mysql.jira-123.test`); with `domain: sandbox.test` the same service is
+`mysql.jira-123.sandbox.test`, a web app is served at `https://<repo>.<set>.sandbox.test`,
+and the set's certificate is issued for `*.<set>.sandbox.test` (a set whose certificate was
+issued for another domain gets a new one on its next `up`). It is one or more labels of
+lowercase letters, digits and inner hyphens; `local` and anything under it are refused,
+because mDNS answers those names.
 
 ## Hosts file
 
@@ -459,8 +468,9 @@ touched; `down` (and a rolled-back `up`) removes the block.
 helper that `sudo sandbox setup` installs root-owned (see [Setup](#setup)), with a NOPASSWD sudoers rule scoped to it. The
 helper only ever edits `/etc/hosts`, rewrites only the named set's block under an
 exclusive `flock` (so concurrent sets never corrupt the file), and refuses any IP outside
-the set's own /24 and any name that is not a `<label>.<set>.test` hostname, so it cannot be
-used to redirect a real domain. Setting `hosts_file` to a path makes `sandbox` write that
+the set's own /24 and any name that is not a `<label>.<set>.<domain>` hostname (`test`, or
+the configured `domain`, which `sandbox` passes as `--domain`), so it can only ever point a
+name under a set's own label at loopback. Setting `hosts_file` to a path makes `sandbox` write that
 file directly instead, without sudo; the tests use this with a temp file.
 
 A set's plan lives at `<sets_root>/<set>/sandbox.yaml`. The set's name is its directory
