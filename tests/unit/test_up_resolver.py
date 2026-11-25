@@ -1,6 +1,12 @@
 """`up` starts the shared resolver and attaches it to the set; `down`, a rolled-back `up`,
 `prune` and `destroy` detach it and leave it running for other sets (fake Docker)."""
 
+import asyncio
+import multiprocessing
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -205,3 +211,66 @@ def test_destroy_detaches_the_resolver_and_leaves_it_for_other_sets(env: Env) ->
     assert "sandbox-jira-123" not in compose.running
     assert docker.resolver_networks == {"sandbox-jira-456_default"}
     assert docker.resolver_domain == "test"
+
+
+@dataclass
+class MachineDocker(FakeDocker):
+    """A Docker whose resolver is state on the machine (a directory), shared by every
+    process, and which starts it the way Docker does: look, then, a moment later, create."""
+
+    machine: Path = Path()
+
+    async def ensure_resolver(self, domain: str) -> None:
+        running = self.machine / "resolver"
+        if not running.exists():
+            await asyncio.sleep(0.3)
+            running.write_text(domain)
+            (self.machine / f"started-by-{os.getpid()}").touch()
+        self.resolver_domain = domain
+
+    async def attach_resolver(self, network: str) -> None:
+        await super().attach_resolver(network)
+        (self.machine / f"attached-{network}").touch()
+
+
+def _up_at(start_at: float, set_name: str, config: str, cwd: str, machine: str) -> tuple[int, str]:
+    """One `up` in a process of its own, started at the same moment as the others."""
+    os.environ["SANDBOX_CONFIG"] = config
+    os.chdir(cwd)
+    git, compose = FakeGit(), FakeCompose()
+    git.add_repo(Path(cwd) / "api")
+    docker = MachineDocker(compose, machine=Path(machine))
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("sandbox.platforms.current_platform", lambda: "linux")
+        time.sleep(max(0.0, start_at - time.time()))
+        result = invoke([set_name, "up", "--repos", "api"], git, compose, docker)
+    return result.exit_code, result.output
+
+
+def test_ups_started_at_the_same_moment_start_one_resolver_attached_to_every_set(
+    env: Env, tmp_path: Path
+) -> None:
+    make_repo(env, FakeGit(), "api")
+    machine = tmp_path / "machine"
+    machine.mkdir()
+    sets = ["jira-1", "jira-2", "jira-3", "jira-4"]
+    start_at = time.time() + 2
+
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=len(sets), mp_context=context) as pool:
+        results = list(
+            pool.map(
+                _up_at,
+                [start_at] * len(sets),
+                sets,
+                [str(env.config_file)] * len(sets),
+                [str(env.cwd)] * len(sets),
+                [str(machine)] * len(sets),
+            )
+        )
+
+    assert [code for code, _ in results] == [0] * len(sets), results
+    assert len(list(machine.glob("started-by-*"))) == 1
+    assert sorted(path.name for path in machine.glob("attached-*")) == [
+        f"attached-sandbox-{set_name}_default" for set_name in sets
+    ]

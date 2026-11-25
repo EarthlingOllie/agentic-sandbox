@@ -8,6 +8,11 @@ but carries no set label: it belongs to no set, so no set's ``down``, ``prune`` 
 ``destroy`` removes it. Its Compose project name contains an underscore, which no set name
 may, so it can never be a set's project either.
 
+Every set's containers can send it packets, so the bundled definition locks it down: an
+unprivileged user, every capability dropped (it listens on an unprivileged port inside the
+container, so binding needs none), no-new-privileges, a read-only root filesystem and no
+mounts. It restarts with Docker, which puts it back on the networks it was attached to.
+
 The steps that start, attach and detach it are in ``sandbox.resolver``.
 """
 

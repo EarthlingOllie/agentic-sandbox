@@ -52,3 +52,7 @@ jobs:
       # Web app tests issue certificates from a throwaway CA ($CAROOT in a temp dir).
       - run: sudo apt-get update && sudo apt-get install -y mkcert
       - run: uv run pytest -m integration
+        env:
+          # Opts in to the one test that restarts the Docker daemon: running sets must
+          # resolve again afterwards (tests/integration/test_resolver_hardening.py).
+          SANDBOX_TEST_DOCKER_RESTART: sudo systemctl restart docker

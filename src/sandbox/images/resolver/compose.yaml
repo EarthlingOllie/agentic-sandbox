@@ -14,11 +14,20 @@ services:
     # An upstream DNS server that cannot answer, so Docker's DNS fails a name it does not
     # know at once instead of forwarding it to the machine's DNS servers.
     dns: ["127.0.0.1"]
-    # The machine's loopback only. This goes through the project's own network, which
-    # stays attached for the resolver's lifetime.
+    # The machine's loopback only, on a port that is not 53. This goes through the project's
+    # own network, which stays attached for the resolver's lifetime. Inside the container
+    # dnsmasq listens on 5353 (dnsmasq.conf).
     ports:
-      - "127.0.0.1:${SANDBOX_RESOLVER_PORT:?set by sandbox}:53/udp"
-      - "127.0.0.1:${SANDBOX_RESOLVER_PORT:?set by sandbox}:53/tcp"
+      - "127.0.0.1:${SANDBOX_RESOLVER_PORT:?set by sandbox}:5353/udp"
+      - "127.0.0.1:${SANDBOX_RESOLVER_PORT:?set by sandbox}:5353/tcp"
+    # Every set's containers can send this container packets, so it holds nothing worth
+    # taking: not root, no capabilities at all (its port is unprivileged, so binding it
+    # needs none), no way to gain any, a read-only root filesystem, and no mounts: its
+    # configuration is in the image, and the Docker socket is nowhere near it.
+    user: "65534:65534"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
     # Comes back with Docker, which restores the networks it was attached to.
     restart: always
     labels:

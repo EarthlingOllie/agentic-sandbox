@@ -381,6 +381,19 @@ root). On Linux, `destroy` deletes those from a throwaway root container
 (`docker run --rm ubuntu:24.04 ...`, the default agent image's base), so sudo is never
 needed. On macOS Docker Desktop maps container files to the developer, so this never arises.
 
+## The resolver and isolation between sets
+
+One shared container, the resolver (`sandbox_resolver`), answers lookups of set hostnames; it
+is attached to the network of every running set, so every set's containers can send it
+packets. A container that deliberately queries the resolver directly, instead of using the
+DNS Docker gives it, can therefore learn the hostnames and addresses of other sets'
+services. It still cannot connect to them: each set has its own network and Docker does
+not route between them, and the resolver only answers names, it carries no traffic. The
+resolver runs as an unprivileged user with every capability dropped, no-new-privileges, a
+read-only root filesystem, no Docker socket and no mounts; it is published on the
+machine's loopback only (`127.0.0.1:15353`), refuses names outside the domain and never
+forwards a name to an upstream DNS server.
+
 ## Setup
 
 Everything that needs root is installed once, after which `sandbox` runs unprivileged:

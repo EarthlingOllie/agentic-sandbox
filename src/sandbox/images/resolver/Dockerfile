@@ -10,5 +10,8 @@ RUN apt-get update \
 
 COPY dnsmasq.conf /etc/dnsmasq.conf
 
+# Never root: dnsmasq needs no privilege to listen on the port its configuration names.
+USER 65534:65534
+
 # In the foreground, logging to stderr; sandbox appends `--server=/<domain>/127.0.0.11`.
 ENTRYPOINT ["dnsmasq", "--keep-in-foreground", "--log-facility=-", "--conf-file=/etc/dnsmasq.conf"]
