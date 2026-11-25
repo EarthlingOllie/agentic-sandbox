@@ -1,31 +1,35 @@
-"""`up` checks what `sudo sandbox setup` installs before it creates anything.
+"""`up` checks, before it creates anything, that this machine can reach the set by name.
 
-Driven through the CLI seam with a fake host (``tests.fakes_host``): its root is a temp
-directory, and `sudo -n -l` and `ifconfig lo0` answers come from a table.
+Driven through the CLI seam with a fake host (``tests.fakes_host``) and the fake Docker: the
+host's root is a temp directory holding whatever per-domain resolver configuration the test
+installs, `orbctl` and `systemctl` answers come from a table, and the fake Docker says which
+runtime it is.
 """
 
 from pathlib import Path
 
 import pytest
+from typer.testing import Result
 
 from sandbox.platforms import Host
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
+from tests.fakes_certs import FakeMkcert
 from tests.fakes_compose import FakeCompose
-from tests.fakes_host import FakeRunner, lo0_with_aliases, make_host
+from tests.fakes_docker import FakeDocker
+from tests.fakes_host import FakeRunner, make_host, point_at_resolver
 
 MYSQL = "services:\n  mysql:\n    image: mysql:8.4\n"
+WEB = "services:\n  api:\n    image: nginx\n    x-sandbox: {web: true}\n"
 HELPER = "usr/local/bin/sandbox-hosts"
 SUDOERS = "etc/sudoers.d/sandbox-hosts"
 PLIST = "Library/LaunchDaemons/sandbox.loopback-aliases.plist"
+ORBSTACK_SETTINGS = "rosetta: true\nnetwork_bridge: {}\nmemory_mib: 8192\n"
 
 
-def use_system_hosts_file(env: Env) -> None:
-    """Production config: the hosts block goes through `sudo -n sandbox-hosts`."""
-    text = env.config_file.read_text()
-    env.config_file.write_text(
-        "".join(line for line in text.splitlines(keepends=True) if "hosts_file" not in line)
-    )
+def configure_domain(env: Env, domain: str) -> None:
+    with env.config_file.open("a") as config:
+        config.write(f"domain: {domain}\n")
 
 
 def make_repo(env: Env, git: FakeGit, name: str = "api", compose: str | None = MYSQL) -> None:
@@ -35,21 +39,44 @@ def make_repo(env: Env, git: FakeGit, name: str = "api", compose: str | None = M
         (path / ".sandbox" / "compose.yaml").write_text(compose)
 
 
-def install(root: Path, *relative: str) -> None:
-    for name in relative:
-        path = root / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("installed\n")
+class Machine:
+    """One `up` of jira-123 on a fake machine, and what it left behind."""
 
+    def __init__(self, env: Env, root: Path, platform: str = "linux") -> None:
+        self.env = env
+        self.root = root
+        self.platform = platform
+        self.git = FakeGit()
+        self.compose = FakeCompose()
+        self.docker = FakeDocker(self.compose)
+        self.runner = FakeRunner()
+        self.mkcert: FakeMkcert | None = None
 
-def up(env: Env, git: FakeGit, compose: FakeCompose, host: Host, *repos: str):
-    return invoke(["jira-123", "up", "--repos", *(repos or ("api",))], git, compose, host=host)
+    @property
+    def host(self) -> Host:
+        return make_host(self.root, platform=self.platform, runner=self.runner)
 
+    def set_up(self, domain: str = "test") -> None:
+        """What `sudo sandbox setup` leaves on the machine for ``domain``."""
+        point_at_resolver(self.root, domain, platform=self.platform)
 
-def assert_nothing_created(env: Env, compose: FakeCompose) -> None:
-    assert compose.calls == []
-    assert not env.set_dir("jira-123").exists()
-    assert not (env.state_dir / "leases.json").exists()
+    def up(self, compose: str | None = MYSQL) -> Result:
+        make_repo(self.env, self.git, compose=compose)
+        return invoke(
+            ["jira-123", "up", "--repos", "api"],
+            self.git,
+            self.compose,
+            self.docker,
+            mkcert=self.mkcert,
+            host=self.host,
+        )
+
+    def assert_nothing_created(self) -> None:
+        assert self.compose.calls == []
+        assert self.git.clones == {}
+        assert not self.env.set_dir("jira-123").exists()
+        assert self.docker.resolver_starts == 0
+        assert self.docker.resolver_networks == set()
 
 
 @pytest.fixture
@@ -59,143 +86,235 @@ def root(tmp_path: Path) -> Path:
     return path
 
 
-# --- the hosts helper ----------------------------------------------------------------------
+@pytest.fixture
+def linux(env: Env, root: Path) -> Machine:
+    return Machine(env, root)
 
 
-def test_up_fails_before_creating_anything_when_the_helper_is_missing(env: Env, root: Path) -> None:
-    use_system_hosts_file(env)
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
-
-    result = up(env, git, compose, make_host(root))
-
-    assert result.exit_code == 1
-    assert "hosts helper /usr/local/bin/sandbox-hosts is not installed" in result.output
-    assert "sudo sandbox setup" in result.output
-    assert_nothing_created(env, compose)
+@pytest.fixture
+def mac(env: Env, root: Path) -> Machine:
+    return Machine(env, root, platform="darwin")
 
 
-def test_up_fails_when_the_helpers_sudoers_rule_is_missing(env: Env, root: Path) -> None:
-    use_system_hosts_file(env)
-    install(root, HELPER)
-    runner = FakeRunner()
-    runner.answer(["sudo", "-n", "-l"], 1, "sudo: a password is required")
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
-
-    result = up(env, git, compose, make_host(root, runner=runner))
-
-    assert result.exit_code == 1
-    assert "no passwordless sudo rule for /usr/local/bin/sandbox-hosts" in result.output
-    assert "sudo sandbox setup" in result.output
-    assert runner.ran("sudo", "-n", "-l") == [["sudo", "-n", "-l", "/usr/local/bin/sandbox-hosts"]]
-    assert_nothing_created(env, compose)
+# --- the per-domain resolver configuration -------------------------------------------------
 
 
-def test_an_installed_helper_with_its_rule_passes(env: Env, root: Path) -> None:
-    use_system_hosts_file(env)
-    install(root, HELPER)
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
-    # The hosts block itself is written through `sudo -n`; stop just after the check.
-    compose.up_error = "stop here"
-
-    result = up(env, git, compose, make_host(root))
-
-    assert "hosts helper" not in result.output
-    assert "stop here" in result.output
-
-
-def test_a_configured_hosts_file_needs_no_helper(env: Env, root: Path) -> None:
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
-
-    result = up(env, git, compose, make_host(root))
-
-    assert result.exit_code == 0, result.output
-
-
-def test_a_set_without_services_needs_no_helper(env: Env, root: Path) -> None:
-    use_system_hosts_file(env)
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git, compose=None)
-
-    result = up(env, git, compose, make_host(root))
-
-    assert result.exit_code == 0, result.output
-
-
-# --- the macOS loopback alias pool ---------------------------------------------------------
-
-
-def macos(root: Path, *aliased: str, plist: bool = True) -> tuple[Host, FakeRunner]:
-    runner = FakeRunner()
-    runner.answer(["ifconfig", "lo0"], 0, lo0_with_aliases(*aliased))
-    if plist:
-        install(root, PLIST)
-    return make_host(root, platform="darwin", runner=runner), runner
-
-
-def test_on_macos_up_fails_before_creating_anything_without_the_launchd_job(
-    env: Env, root: Path
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_up_fails_before_creating_anything_on_a_machine_setup_never_ran_on(
+    env: Env, root: Path, platform: str
 ) -> None:
-    host, _ = macos(root, plist=False)
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
+    machine = Machine(env, root, platform)
 
-    result = up(env, git, compose, host)
+    result = machine.up()
 
     assert result.exit_code == 1
-    assert "loopback alias pool is not installed" in result.output
-    assert "sudo sandbox setup" in result.output
-    assert_nothing_created(env, compose)
+    assert "does not send names under `test` to sandbox's resolver" in result.output
+    assert "run `sudo sandbox setup`" in result.output
+    machine.assert_nothing_created()
 
 
-def test_on_macos_up_fails_when_the_job_is_installed_but_no_alias_exists(
-    env: Env, root: Path
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_a_machine_setup_ran_on_brings_the_set_up(env: Env, root: Path, platform: str) -> None:
+    machine = Machine(env, root, platform)
+    machine.set_up()
+
+    result = machine.up()
+
+    assert result.exit_code == 0, result.output
+    assert "mysql.jira-123.test" in result.output
+    assert machine.docker.resolver_networks == {"sandbox-jira-123_default"}
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_up_fails_naming_both_domains_when_the_configured_one_is_not_the_installed_one(
+    env: Env, root: Path, platform: str
 ) -> None:
-    host, _ = macos(root)
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
+    machine = Machine(env, root, platform)
+    machine.set_up("test")
+    configure_domain(env, "dev.example")
 
-    result = up(env, git, compose, host)
+    result = machine.up()
 
     assert result.exit_code == 1
-    assert "no lo0 aliases in 127.42.0.0/16" in result.output
-    assert_nothing_created(env, compose)
+    assert "the configured domain is `dev.example`" in result.output
+    assert "setup pointed this machine at the resolver for `test`" in result.output
+    assert "rerun setup: `sudo sandbox setup --domain dev.example`" in result.output
+    machine.assert_nothing_created()
 
 
-def test_on_macos_a_set_comes_up_with_the_alias_pool_installed(env: Env, root: Path) -> None:
-    host, _ = macos(root, "127.42.0.0/24")
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_a_non_default_domain_setup_installed_passes(env: Env, root: Path, platform: str) -> None:
+    machine = Machine(env, root, platform)
+    machine.set_up("dev.example")
+    configure_domain(env, "dev.example")
 
-    # More sets than aliased blocks: nothing is leased, so the pool's size limits nothing.
-    results = [
-        invoke([name, "up", "--repos", "api"], git, compose, host=host) for name in ("a", "b", "c")
-    ]
-
-    assert [result.exit_code for result in results] == [0, 0, 0], results[-1].output
-    assert "mysql.c.test" in results[-1].output
-
-
-def test_on_linux_up_reads_no_loopback_state(env: Env, root: Path) -> None:
-    runner = FakeRunner()
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git)
-
-    result = up(env, git, compose, make_host(root, runner=runner))
+    result = machine.up()
 
     assert result.exit_code == 0, result.output
-    assert runner.calls == []
+    assert "mysql.jira-123.dev.example" in result.output
 
 
-def test_on_macos_a_set_without_services_needs_no_alias_pool(env: Env, root: Path) -> None:
-    host, runner = macos(root, plist=False)
-    git, compose = FakeGit(), FakeCompose()
-    make_repo(env, git, compose=None)
+def test_on_macos_another_tools_resolver_file_for_the_domain_does_not_count(mac: Machine) -> None:
+    other = mac.root / "etc" / "resolver" / "test"
+    other.parent.mkdir(parents=True)
+    other.write_text("nameserver 10.0.0.53\n")
 
-    result = up(env, git, compose, host)
+    result = mac.up()
+
+    assert result.exit_code == 1
+    assert "run `sudo sandbox setup`" in result.output
+    mac.assert_nothing_created()
+
+
+def test_on_linux_without_systemd_resolved_up_cannot_check_and_says_so(linux: Machine) -> None:
+    """Setup installs nothing there (the developer adds one line to their own DNS server),
+    so there is nothing `up` could read: it warns and carries on."""
+    linux.runner.answer(["systemctl", "is-active"], 3, "inactive")
+
+    result = linux.up()
 
     assert result.exit_code == 0, result.output
-    assert runner.calls == []
+    assert "warning: cannot check that this machine sends names under `test`" in result.output
+    assert "server=/test/127.0.0.1#15353" in result.output
+
+
+def test_on_linux_with_the_configuration_installed_up_runs_no_command(linux: Machine) -> None:
+    linux.set_up()
+
+    result = linux.up()
+
+    assert result.exit_code == 0, result.output
+    assert linux.runner.calls == []
+    assert "warning" not in result.output
+
+
+# --- macOS: the Docker runtime -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "runtime", ["Docker Desktop", "Colima", "Rancher Desktop WSL Distribution"]
+)
+def test_on_macos_a_runtime_other_than_orbstack_fails_naming_orbstack(
+    mac: Machine, runtime: str
+) -> None:
+    mac.set_up()
+    mac.docker.runtime = runtime
+
+    result = mac.up()
+
+    assert result.exit_code == 1
+    assert f"Docker on this Mac is {runtime}" in result.output
+    assert "containers are not reachable at their own addresses" in result.output
+    assert "OrbStack (https://orbstack.dev)" in result.output
+    mac.assert_nothing_created()
+
+
+def test_on_macos_with_orbstack_and_direct_container_access_off_up_names_the_setting(
+    mac: Machine,
+) -> None:
+    mac.set_up()
+    mac.runner.answer(["orbctl", "config", "show"], 0, ORBSTACK_SETTINGS.format("false"))
+
+    result = mac.up()
+
+    assert result.exit_code == 1
+    assert "OrbStack's direct container access is off" in result.output
+    assert "Allow access to container domains & IPs" in result.output
+    assert "orbctl config set network_bridge true" in result.output
+    mac.assert_nothing_created()
+
+
+def test_on_macos_with_orbstack_and_direct_container_access_on_the_set_comes_up(
+    mac: Machine,
+) -> None:
+    mac.set_up()
+    mac.runner.answer(["orbctl", "config", "show"], 0, ORBSTACK_SETTINGS.format("true"))
+
+    result = mac.up()
+
+    assert result.exit_code == 0, result.output
+    assert mac.runner.calls == [["orbctl", "config", "show"]]
+
+
+def test_on_macos_an_orbstack_that_does_not_report_the_setting_passes(mac: Machine) -> None:
+    mac.set_up()
+    mac.runner.answer(["orbctl"], 127, "No such file or directory: 'orbctl'")
+
+    result = mac.up()
+
+    assert result.exit_code == 0, result.output
+
+
+def test_on_macos_up_names_everything_that_is_wrong_at_once(mac: Machine) -> None:
+    mac.docker.runtime = "Docker Desktop"
+
+    result = mac.up()
+
+    assert result.exit_code == 1
+    assert "Docker on this Mac is Docker Desktop" in result.output
+    assert "run `sudo sandbox setup`" in result.output
+    mac.assert_nothing_created()
+
+
+def test_on_linux_the_docker_runtime_is_not_asked_about(linux: Machine) -> None:
+    linux.set_up()
+    linux.docker.runtime = "Docker Desktop"
+
+    result = linux.up()
+
+    assert result.exit_code == 0, result.output
+
+
+# --- what needs none of it, and what is still needed ---------------------------------------
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_a_set_without_services_needs_none_of_it(env: Env, root: Path, platform: str) -> None:
+    machine = Machine(env, root, platform)
+    machine.docker.runtime = "Docker Desktop"
+    configure_domain(env, "dev.example")
+
+    result = machine.up(compose=None)
+
+    assert result.exit_code == 0, result.output
+    assert machine.runner.calls == []
+    assert "warning" not in result.output
+
+
+def test_a_set_with_a_web_app_still_needs_the_mkcert_ca(linux: Machine) -> None:
+    linux.set_up()
+    linux.mkcert = FakeMkcert(linux.env.root / "mkcert")
+    (linux.mkcert.ca_dir / "rootCA.pem").unlink()
+
+    result = linux.up(compose=WEB)
+
+    assert result.exit_code == 1
+    assert "rootCA.pem" in result.output
+    assert "sudo sandbox setup" in result.output
+    linux.assert_nothing_created()
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_the_hosts_helper_its_sudoers_rule_and_the_alias_pool_are_not_checked(
+    env: Env, root: Path, platform: str
+) -> None:
+    """None of the three is installed, the config names no hosts file, and `sudo -n -l` and
+    `ifconfig lo0` would both fail: `up` asks neither."""
+    env.config_file.write_text(
+        "".join(
+            line
+            for line in env.config_file.read_text().splitlines(keepends=True)
+            if "hosts_file" not in line
+        )
+    )
+    machine = Machine(env, root, platform)
+    machine.set_up()
+    machine.runner.answer(["sudo"], 1, "sudo: a password is required")
+    machine.runner.answer(["ifconfig"], 1, "ifconfig: interface lo0 does not exist")
+
+    result = machine.up()
+
+    assert result.exit_code == 0, result.output
+    assert not any((root / name).exists() for name in (HELPER, SUDOERS, PLIST))
+    assert machine.runner.ran("sudo") == []
+    assert machine.runner.ran("ifconfig") == []

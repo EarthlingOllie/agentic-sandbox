@@ -9,6 +9,8 @@ container.
 The resolver is a domain (while it runs) and the set of networks it is attached to. The
 networks live on the Compose fake, whose `down` refuses to remove a network the resolver is
 still on, as Docker does.
+
+It says OrbStack runs it unless a test names another runtime; only macOS hosts are asked.
 """
 
 import shutil
@@ -42,6 +44,8 @@ class FakeDocker:
     resolver_removals: list[str | None] = field(default_factory=list[str | None])
     # When set, removing the resolver fails with this message.
     resolver_removal_error: str | None = None
+    # What the Docker daemon says runs it (`docker info`'s operating system).
+    runtime: str = "OrbStack"
 
     @property
     def resolver_networks(self) -> set[str]:
@@ -69,6 +73,9 @@ class FakeDocker:
         self.resolver_removals.append(as_user)
         self.resolver_domain = None
         self.compose.resolver_networks.clear()
+
+    async def operating_system(self) -> str:
+        return self.runtime
 
     async def set_containers(self) -> list[Container]:
         found: list[Container] = []

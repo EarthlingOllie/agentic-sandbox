@@ -2,10 +2,12 @@
 
 Its filesystem root is a temp directory, so ``setup`` installs the helper, the sudoers rule
 and the launchd job under it, and every command (``sudo``, ``visudo``, ``launchctl``,
-``ifconfig``, ``mkcert``, ``systemctl``) goes to :class:`FakeRunner`, which records it and
-answers from a table: unless a test says otherwise every command succeeds, so the machine
-looks like a Linux one running systemd-resolved. The per-domain resolver configuration is
-plain files under the root (``/etc/resolver/<domain>``, the systemd-resolved drop-in). The
+``ifconfig``, ``mkcert``, ``systemctl``, ``orbctl``) goes to :class:`FakeRunner`, which
+records it and answers from a table: unless a test says otherwise every command succeeds,
+so the machine looks like a Linux one running systemd-resolved. The per-domain resolver
+configuration is plain files under the root (``/etc/resolver/<domain>``, the
+systemd-resolved drop-in);
+:func:`point_at_resolver` puts them there the way a finished ``setup`` leaves them. The
 one command the runner really performs is a file written as the invoking user (``sudo -u
 USER -H -- /bin/sh -c ...``, how setup writes that user's config): it runs, without the
 ``sudo``, against the temp directory. Nothing here touches the real machine or needs root.
@@ -58,6 +60,19 @@ def lo0_with_aliases(*blocks: str) -> str:
         for ip in IPv4Network(block).hosts():
             lines.append(f"\tinet {ip} netmask 0xff000000\n")
     return "".join(lines)
+
+
+def point_at_resolver(root: Path, domain: str = "test", *, platform: str = "linux") -> None:
+    """Leave under ``root`` what ``sudo sandbox setup`` installs to send ``domain`` to the
+    resolver: the systemd-resolved drop-in on Linux, ``/etc/resolver/<domain>`` on macOS."""
+    if platform == "darwin":
+        path = root / "etc" / "resolver" / domain
+        text = "nameserver 127.0.0.1\nport 15353\n"
+    else:
+        path = root / "etc" / "systemd" / "resolved.conf.d" / "sandbox.conf"
+        text = f"[Resolve]\nDNS=127.0.0.1:15353\nDomains=~{domain}\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
 
 
 def make_host(

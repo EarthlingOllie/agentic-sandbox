@@ -11,7 +11,6 @@ import shlex
 import shutil
 import socket
 import subprocess
-import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -32,7 +31,7 @@ from sandbox.compose.resolver import (
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
 from tests.dns import NOERROR, REFUSED, Answer, lookup
-from tests.integration.conftest import git, resolver_networks, unique_set
+from tests.integration.conftest import git, resolver_networks, sandbox_argv, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -337,7 +336,7 @@ def test_ups_started_at_the_same_moment_leave_one_resolver_attached_to_every_set
     resolver every set on the machine shares: a developer's own running sets resolve again
     after their next ``up``."""
     remove_resolver()
-    sandbox = [sys.executable, "-c", "from sandbox.cli import main; main()"]
+    sandbox = sandbox_argv()
 
     started = [
         subprocess.Popen(

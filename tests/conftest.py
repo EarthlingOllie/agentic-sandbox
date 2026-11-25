@@ -4,11 +4,13 @@ Every host-state location sandbox uses is redirected into ``tmp_path`` through a
 file named by ``SANDBOX_CONFIG``, so tests never touch the real home directory.
 """
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner, Result
 
 from sandbox.certs import Mkcert
@@ -20,6 +22,7 @@ from sandbox.git import Git
 from sandbox.platforms import Host
 from tests.fakes_compose import FakeCompose
 from tests.fakes_docker import FakeDocker
+from tests.fakes_host import point_at_resolver
 
 
 @dataclass
@@ -81,6 +84,22 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     return environment
 
 
+def set_up_machine() -> Host:
+    """The real machine, except that its system files live in a directory beside the test's
+    config, where ``sudo sandbox setup`` has pointed it at the resolver for whichever domain
+    that config names. Tests of setup and of ``up``'s prerequisite checks pass a host of
+    their own (``tests.fakes_host``)."""
+    config_file = Path(os.environ["SANDBOX_CONFIG"])
+    try:
+        config = yaml.safe_load(config_file.read_text())
+        domain = config["domain"]
+    except (OSError, yaml.YAMLError, TypeError, KeyError):
+        domain = "test"
+    root = config_file.parent / "set-up-machine"
+    point_at_resolver(root, str(domain))
+    return Host(root=root)
+
+
 def invoke(
     args: Sequence[str],
     git: Git,
@@ -91,13 +110,13 @@ def invoke(
 ) -> Result:
     """Run the CLI in-process. Compose defaults to a fake so git-only tests need no Docker;
     Docker queries default to a fake that reports what that Compose fake is running; mkcert
-    defaults to the real CLI (only sets with a web app use it)."""
+    defaults to the real CLI (only sets with a web app use it); the host defaults to a
+    machine setup has run on (:func:`set_up_machine`)."""
     compose = compose if compose is not None else FakeCompose()
     if docker is None:
         docker = FakeDocker(compose) if isinstance(compose, FakeCompose) else SubprocessDocker()
     deps = Deps(git=git, compose=compose, docker=docker)
     if mkcert is not None:
         deps.mkcert = mkcert
-    if host is not None:
-        deps.host = host
+    deps.host = host if host is not None else set_up_machine()
     return CliRunner().invoke(app, list(args), obj=deps)

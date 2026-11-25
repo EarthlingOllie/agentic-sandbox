@@ -61,6 +61,11 @@ class Docker(Protocol):
         throwaway root container, for files containers left behind owned by root."""
         ...
 
+    async def operating_system(self) -> str:
+        """What the Docker daemon says runs it: ``OrbStack``, ``Docker Desktop``, or on
+        Linux the distribution's name."""
+        ...
+
     async def ensure_resolver(self, domain: str) -> None:
         """Start the resolver, forwarding ``domain``, unless it already runs that way; its
         image is built from the bundled definition when missing."""
@@ -138,6 +143,9 @@ class SubprocessDocker:
                 CLEANUP_IMAGE, _CLEANUP_MOUNT, "-mindepth", "1", "-delete",
             ]
         )  # fmt: skip
+
+    async def operating_system(self) -> str:
+        return (await self._check(["info", "--format", "{{.OperatingSystem}}"])).strip()
 
     async def ensure_resolver(self, domain: str) -> None:
         # Compose leaves a container that already matches alone, builds the image when it

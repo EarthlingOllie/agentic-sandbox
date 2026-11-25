@@ -1,92 +1,107 @@
-"""Prerequisite checks: ``up`` fails before creating anything if setup has not been run.
+"""Prerequisite checks: ``up`` fails before creating anything on a machine that could not
+reach the set by name.
 
-The ``prerequisites`` validation step checks what ``sudo sandbox setup`` (``sandbox.setup``)
-installs, naming each missing piece. ``up`` itself no longer uses either piece (it leases no
-IP and writes no hosts block); the checks stay until they are replaced by the resolver's
-own prerequisites:
+The ``prerequisites`` validation step runs for a set with services and names everything
+that is wrong, each with its fix:
 
-- the hosts helper and its NOPASSWD sudoers rule, when the hosts block goes into
-  ``/etc/hosts`` (``hosts_file`` unset in the config). ``sudo -n -l HELPER`` asks sudo
-  itself whether the rule lets this user run the helper without a password;
-- on macOS, the ``lo0`` alias pool: the launchd job, and at least one of the pool's /24
-  blocks aliased right now. Linux needs no aliases (127.0.0.0/8 is local).
+- the per-domain resolver configuration ``sudo sandbox setup`` installs
+  (``sandbox.resolver_config``) is there, and it is for the configured domain. Without it
+  the operating system never asks the resolver; with another domain's, it asks the resolver
+  about names no set has. On Linux without systemd-resolved setup installs nothing (the
+  developer adds one line to their own DNS server), so there is nothing to read: ``up``
+  warns that it cannot check and carries on;
+- on macOS, Docker is run by OrbStack, with its direct container access on. A set publishes
+  nothing, so its services are reached at their containers' own addresses; of the macOS
+  runtimes only OrbStack routes those from the Mac. The runtime is what the Docker daemon
+  reports as its operating system (``docker info``). The setting is ``network_bridge`` in
+  ``orbctl config show`` ("Allow access to container domains & IPs" in OrbStack's network
+  settings); an OrbStack that does not report it is taken to have it on, its default.
 
 The mkcert CA (``rootCA.pem``) is checked by the ``web-apps`` step, for sets that serve
 HTTPS (``sandbox.web``). Sets without services need none of this.
 """
 
-import re
-from ipaddress import IPv4Address, IPv4Network
+from typing import Final
 
+from sandbox.docker import Docker
 from sandbox.errors import SandboxError
-from sandbox.hosts_block import HELPER_PATH
-from sandbox.leases import BLOCK_PREFIX
 from sandbox.pipeline import UpContext
 from sandbox.platforms import Host
-from sandbox.setup import LAUNCHD_PLIST, SETUP_COMMAND
+from sandbox.resolver_config import has_systemd_resolved, installed_domains, manual_line
+from sandbox.setup import SETUP_COMMAND
 
-_INET = re.compile(r"\binet (\d+\.\d+\.\d+\.\d+)")
+ORBSTACK: Final = "OrbStack"
+ORBSTACK_SETTINGS_COMMAND: Final = ("orbctl", "config", "show")
+ORBSTACK_BRIDGE_KEY: Final = "network_bridge"
+ORBSTACK_BRIDGE_LABEL: Final = "Allow access to container domains & IPs"
 
 
 async def check_prerequisites(ctx: UpContext) -> None:
-    """Validation step: fail naming every missing prerequisite of a set with services."""
+    """Validation step: fail naming every reason this machine could not reach the set."""
     if not ctx.graph.services:
         return
     problems: list[str] = []
-    if ctx.config.hosts_file is None:
-        problem = await helper_problem(ctx.host)
+    if ctx.host.is_macos:
+        problem = await runtime_problem(ctx.host, ctx.docker)
         if problem:
             problems.append(problem)
-    if ctx.host.is_macos:
-        try:
-            await _alias_pool(ctx)
-        except SandboxError as exc:
-            problems.append(str(exc))
+    problem = await resolver_problem(ctx)
+    if problem:
+        problems.append(problem)
     if problems:
-        raise SandboxError("setup is incomplete:\n  " + "\n  ".join(problems))
+        raise SandboxError("this machine cannot reach the set:\n  " + "\n  ".join(problems))
 
 
-async def helper_problem(host: Host) -> str | None:
-    if not host.path(HELPER_PATH).is_file():
-        return f"the hosts helper {HELPER_PATH} is not installed; run `{SETUP_COMMAND}`"
-    status, _ = await host.run(["sudo", "-n", "-l", str(HELPER_PATH)])
-    if status != 0:
+async def resolver_problem(ctx: UpContext) -> str | None:
+    """Why the operating system would not send the domain to the resolver; None when it
+    does, or when nothing on this machine could tell."""
+    domain = ctx.config.domain
+    installed = installed_domains(ctx.host)
+    if domain in installed:
+        return None
+    if installed:
         return (
-            f"there is no passwordless sudo rule for {HELPER_PATH} for this user; "
-            f"run `{SETUP_COMMAND}` as this user"
+            f"the configured domain is `{domain}`, but setup pointed this machine at the "
+            f"resolver for `{'`, `'.join(installed)}`; rerun setup: "
+            f"`{SETUP_COMMAND} --domain {domain}`"
+        )
+    if not ctx.host.is_macos and not await has_systemd_resolved(ctx.host):
+        ctx.warn(
+            f"cannot check that this machine sends names under `{domain}` to sandbox's "
+            "resolver (there is no systemd-resolved for setup to configure); your DNS "
+            f"server needs the line `{manual_line(domain)}`"
+        )
+        return None
+    return (
+        f"it does not send names under `{domain}` to sandbox's resolver (there is no "
+        f"per-domain resolver configuration); run `{SETUP_COMMAND}`"
+    )
+
+
+async def runtime_problem(host: Host, docker: Docker) -> str | None:
+    """Why containers are not reachable at their own addresses from this Mac; None when
+    they are."""
+    runtime = (await docker.operating_system()) or "an unnamed runtime"
+    if runtime != ORBSTACK:
+        return (
+            f"Docker on this Mac is {runtime}, where containers are not reachable at their "
+            "own addresses, which is where set hostnames point; on macOS sandbox needs "
+            f"{ORBSTACK} (https://orbstack.dev)"
+        )
+    status, output = await host.run(list(ORBSTACK_SETTINGS_COMMAND))
+    if status == 0 and _setting(output, ORBSTACK_BRIDGE_KEY) == "false":
+        return (
+            f"{ORBSTACK}'s direct container access is off; turn on "
+            f'"{ORBSTACK_BRIDGE_LABEL}" in its network settings, or run '
+            f"`orbctl config set {ORBSTACK_BRIDGE_KEY} true`"
         )
     return None
 
 
-async def aliased_ips(host: Host) -> set[IPv4Address]:
-    """The IPv4 addresses on ``lo0`` right now (macOS)."""
-    status, output = await host.run(["ifconfig", "lo0"])
-    if status != 0:
-        raise SandboxError(f"could not read the lo0 aliases: `ifconfig lo0` failed: {output}")
-    return {IPv4Address(ip) for ip in _INET.findall(output)}
-
-
-def aliased_blocks(pool: IPv4Network, aliased: set[IPv4Address]) -> int:
-    """How many of ``pool``'s /24s, from its start, have every host address aliased."""
-    count = 0
-    for block in pool.subnets(new_prefix=BLOCK_PREFIX):
-        if not all(ip in aliased for ip in block.hosts()):
-            break
-        count += 1
-    return count
-
-
-async def _alias_pool(ctx: UpContext) -> None:
-    pool = ctx.config.ip_pool
-    if not ctx.host.path(LAUNCHD_PLIST).is_file():
-        raise SandboxError(
-            f"the loopback alias pool is not installed (no launchd job {LAUNCHD_PLIST}); "
-            f"run `{SETUP_COMMAND}`"
-        )
-    count = aliased_blocks(pool, await aliased_ips(ctx.host))
-    if count == 0:
-        raise SandboxError(
-            f"the loopback alias pool's launchd job is installed, but there are no lo0 "
-            f"aliases in {pool} (the job adds them at boot); run `{SETUP_COMMAND}` to add "
-            "them now"
-        )
+def _setting(settings: str, key: str) -> str | None:
+    """``key``'s value in ``orbctl config show`` output (``key: value`` lines)."""
+    for line in settings.splitlines():
+        name, separator, value = line.partition(":")
+        if separator and name.strip() == key:
+            return value.strip().lower()
+    return None

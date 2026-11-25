@@ -5,7 +5,7 @@
 - ``VALIDATION_STEPS`` check every repo, its ``.sandbox/`` and compose file, deduplicate
   same-named services across repos (``sandbox.compose.dedup``), check the agent override
   and its image (``sandbox.agent_override``), check web apps, hostname clashes and the
-  mkcert CA (``sandbox.web``), check what ``sudo sandbox setup`` installs
+  mkcert CA (``sandbox.web``), check that this machine can reach the set by name
   (``sandbox.preflight``), check init hooks target the set's services
   (``sandbox.hooks``), then observe the set's state.
   Nothing is created until all of them pass, and none of them writes anything.

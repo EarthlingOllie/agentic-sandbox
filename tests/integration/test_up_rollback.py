@@ -8,7 +8,6 @@ import os
 import shutil
 import signal
 import subprocess
-import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -17,7 +16,7 @@ import pytest
 
 from sandbox.compose import project_name
 from tests.conftest import Env
-from tests.integration.conftest import git, unique_set
+from tests.integration.conftest import git, sandbox_argv, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -72,7 +71,7 @@ def leftovers(set_name: str) -> list[str]:
 
 def sandbox(env: Env, *args: str, new_session: bool = False) -> subprocess.Popen[str]:
     return subprocess.Popen(
-        [sys.executable, "-m", "sandbox", *args],
+        [*sandbox_argv(), *args],
         cwd=env.cwd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

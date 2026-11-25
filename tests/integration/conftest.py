@@ -13,6 +13,11 @@ operating system at it is ``setup``'s job).
 Only the macOS alias test of ``setup`` still needs a loopback pool of its own
 (:func:`ip_pool`, see :mod:`tests.ip_pools`; ``SANDBOX_TEST_IP_POOL`` pins it).
 
+``up`` refuses a machine that does not send the domain to the resolver. In-process runs get a
+machine setup has run on from ``tests.conftest.invoke``; tests that start real ``sandbox``
+processes start them with :func:`sandbox_argv`, which gives them the same machine (the
+host's root is the one thing a subprocess cannot be handed otherwise).
+
 The resolver is global to the host as well, and deliberately shared: every test's sets are
 attached to the one resolver, as real sets are. Tests clean up with a plain ``docker compose
 down``, which cannot remove a network the resolver is still on, so the resolver is taken
@@ -26,6 +31,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from ipaddress import IPv4Network
 from pathlib import Path
@@ -40,7 +46,7 @@ from sandbox.compose.resolver import (
     set_network,
 )
 from sandbox.names import validate_set_name
-from tests.conftest import Env
+from tests.conftest import Env, set_up_machine
 from tests.dns import lookup
 from tests.ip_pools import claim_run_pool
 
@@ -77,6 +83,21 @@ def ip_pool(env: Env, run_ip_pool: IPv4Network) -> IPv4Network:
     with env.config_file.open("a") as config:
         config.write(f"ip_pool: {pool}\n")
     return pool
+
+
+# The CLI with the real collaborators, on a host whose system files are under argv[1].
+_CLI_ON_MACHINE = (
+    "import sys; from pathlib import Path; "
+    "from sandbox.cli import app; from sandbox.context import Deps; "
+    "from sandbox.platforms import Host; "
+    "app(obj=Deps(host=Host(root=Path(sys.argv.pop(1)))))"
+)
+
+
+def sandbox_argv() -> list[str]:
+    """The start of a command line running ``sandbox`` in a process of its own, on a machine
+    setup has run on for the test's configured domain."""
+    return [sys.executable, "-c", _CLI_ON_MACHINE, str(set_up_machine().root)]
 
 
 def container_address(set_name: str, service: str) -> str:
