@@ -2,10 +2,16 @@
 
 Its filesystem root is a temp directory, so ``setup`` installs the helper, the sudoers rule
 and the launchd job under it, and every command (``sudo``, ``visudo``, ``launchctl``,
-``ifconfig``, ``mkcert``) goes to :class:`FakeRunner`, which records it and answers from a
-table. Nothing here touches the real machine or needs root.
+``ifconfig``, ``mkcert``, ``systemctl``) goes to :class:`FakeRunner`, which records it and
+answers from a table: unless a test says otherwise every command succeeds, so the machine
+looks like a Linux one running systemd-resolved. The per-domain resolver configuration is
+plain files under the root (``/etc/resolver/<domain>``, the systemd-resolved drop-in). The
+one command the runner really performs is a file written as the invoking user (``sudo -u
+USER -H -- /bin/sh -c ...``, how setup writes that user's config): it runs, without the
+``sudo``, against the temp directory. Nothing here touches the real machine or needs root.
 """
 
+import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -36,6 +42,9 @@ class FakeRunner:
         for prefix, status, output in self.answers:
             if list(argv[: len(prefix)]) == prefix:
                 return status, output
+        if list(argv[:2]) == ["sudo", "-u"] and list(argv[3:6]) == ["-H", "--", "/bin/sh"]:
+            done = subprocess.run(list(argv[5:]), capture_output=True, text=True, check=False)
+            return done.returncode, (done.stdout + done.stderr).strip()
         return 0, ""
 
     def ran(self, *prefix: str) -> list[list[str]]:

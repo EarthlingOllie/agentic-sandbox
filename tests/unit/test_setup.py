@@ -446,7 +446,7 @@ def test_uninstall_on_linux_needs_no_loopback_teardown(env: Env, root: Path, bin
 
     assert result.exit_code == 0, result.output
     assert_nothing_installed(root)
-    assert runner.calls == []
+    assert [call for call in runner.calls if call[0] != "systemctl"] == []
     assert "mkcert -uninstall" in result.output
 
 

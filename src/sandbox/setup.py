@@ -2,23 +2,31 @@
 
 After it, the everyday ``sandbox`` runs unprivileged:
 
-- **Hosts helper.** A root-owned copy of ``sandbox-hosts`` at ``/usr/local/bin``, run by the
-  system's Python with ``-I -S`` from a root-owned bundle of the stdlib-only modules it needs
-  (``/usr/local/lib/sandbox-hosts``), so nothing the user can write (a virtualenv,
-  site-packages, ``PYTHONPATH``) runs as root. A NOPASSWD sudoers rule lets the invoking user
-  run exactly that file (checked with ``visudo -c`` before it is put in place).
-- **macOS loopback pool.** A launchd job that adds ``lo0`` aliases for every address of the
-  pool's first ``--sets`` /24 blocks at boot (run once now as well). Linux needs none: the
-  whole of 127.0.0.0/8 is local.
+- **Resolver configuration.** The operating system is told to send lookups under the domain
+  to the resolver (``sandbox.resolver_config``): ``/etc/resolver/<domain>`` on macOS, a
+  systemd-resolved drop-in and a reload on Linux. A Linux machine without systemd-resolved
+  is refused before anything is installed, with the line to add by hand. ``--domain`` chooses
+  the domain and is written into the invoking user's config, as that user, leaving the
+  file's other keys alone; without it the configured domain (``test`` by default) is used
+  and the config is not touched. A rerun with another domain removes the previous domain's
+  configuration. The configuration is itself the record of the installed domain
+  (:func:`sandbox.resolver_config.installed_domain`).
 - **mkcert CA.** ``mkcert -install``, run as ``SUDO_USER`` (never as root), so the CA lands
   in that user's CAROOT and their browser trusts it.
+- **Hosts helper** and **macOS loopback pool**, from the loopback model, until that model's
+  machinery is removed: a root-owned copy of ``sandbox-hosts`` at ``/usr/local/bin`` with a
+  NOPASSWD sudoers rule for exactly that file (checked with ``visudo -c``), run by the
+  system's Python with ``-I -S`` from a root-owned bundle of stdlib-only modules; and a
+  launchd job adding ``lo0`` aliases for the pool's first ``--sets`` /24 blocks. Before
+  installing anything setup refuses if the configured IP range is already in use.
 
-Before installing anything it refuses if the configured IP range is already in use (an
-interface address, or a hosts-file entry outside sandbox's own blocks). ``--uninstall``
-removes the helper, the sudoers rule and the launchd job (and its aliases), and leaves the
-mkcert CA, printing the ``mkcert -uninstall`` command instead. Every system path is taken
-relative to :attr:`Host.root`, and every command goes through :attr:`Host.run`, so tests run
-setup against a temp directory with a fake runner.
+Setup starts no containers: the resolver itself is started by ``up``. ``--uninstall``
+removes the resolver configuration of whichever domain was installed, the helper, the
+sudoers rule and the launchd job (and its aliases), then stops and removes the resolver,
+through Docker as the invoking user. It leaves the mkcert CA, printing the ``mkcert
+-uninstall`` command instead. Every system path is taken relative to :attr:`Host.root`, and
+every command goes through :attr:`Host.run`, so tests run setup against a temp directory
+with a fake runner.
 """
 
 import os
@@ -29,13 +37,21 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
-from typing import Final
+from typing import Any, Final, cast
 
+import yaml
+
+from sandbox import resolver_config
+from sandbox.compose.resolver import RESOLVER_ADDRESS, RESOLVER_CONTAINER, RESOLVER_PORT
 from sandbox.config import Config, load_config
+from sandbox.docker import Docker
 from sandbox.errors import SandboxError
 from sandbox.hosts_block import HELPER_PATH, SYSTEM_HOSTS_FILE, outside_blocks
 from sandbox.leases import BLOCK_PREFIX
+from sandbox.names import validate_domain
 from sandbox.platforms import Host
+from sandbox.resolver_config import RESOLVED_DROP_IN, RESOLVED_UNIT
+from sandbox.yamlio import dump_yaml
 
 SETUP_COMMAND: Final = "sudo sandbox setup"
 DEFAULT_SETS: Final = 16
@@ -57,6 +73,12 @@ _USER_NAME: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _INTERFACE_LINE: Final = re.compile(r"^(?:\d+:\s+)?([^\s:]+):?\s")
 _INET: Final = re.compile(r"\binet (\d+\.\d+\.\d+\.\d+)")
 _SHOWN_CONFLICTS: Final = 5
+_DOMAIN_KEY: Final = re.compile(r"domain\s*:")
+# $1: the file, $2: its new content. Written beside the file and moved over it.
+_WRITE_FILE: Final = (
+    'mkdir -p -- "$(dirname -- "$1")" && printf %s "$2" > "$1.sandbox-tmp" '
+    '&& mv -f -- "$1.sandbox-tmp" "$1"'
+)
 
 
 @dataclass(frozen=True)
@@ -65,21 +87,33 @@ class SetupResult:
     lines: list[str]
 
 
-async def install(host: Host, sets: int = DEFAULT_SETS) -> SetupResult:
-    """Install the helper, its sudoers rule, the macOS alias pool and the mkcert CA."""
+async def install(host: Host, sets: int = DEFAULT_SETS, domain: str | None = None) -> SetupResult:
+    """Point the machine at the resolver for the domain and install the mkcert CA (and,
+    until the loopback model is removed, the hosts helper and the macOS alias pool).
+
+    ``domain`` (``--domain``) is recorded in the invoking user's config; without it the
+    configured domain is used, which is ``test`` unless the config says otherwise.
+    """
     user = _require_root(host)
-    config = _user_config(host, user)
+    config_path = _user_config_path(host, user)
+    config = _load_user_config(host, config_path)
+    chosen = _chosen_domain(domain, config)
     blocks = _pool_blocks(config.ip_pool, sets)
     mkcert = _find_mkcert(host)
     await _refuse_used_range(host, config.ip_pool)
+    await _require_resolver_support(host, chosen)
 
+    lines: list[str] = []
+    if domain is not None:
+        await _record_domain(host, user, config_path, chosen)
+        lines.append(f"config: `domain: {chosen}` written to {config_path} as {user}")
     await _check_python(host)
     _install_helper(host)
     await _install_sudoers(host, user)
-    lines = [
+    lines.append(
         f"hosts helper: {HELPER_PATH} (root-owned), runnable by {user} without a password "
         f"(sudoers rule {SUDOERS_PATH}, this helper only)"
-    ]
+    )
     if host.is_macos:
         await _install_alias_pool(host, config.ip_pool, blocks)
         lines.append(
@@ -88,16 +122,26 @@ async def install(host: Host, sets: int = DEFAULT_SETS) -> SetupResult:
         )
     else:
         lines.append("loopback: no loopback setup needed on Linux (127.0.0.0/8 is local)")
+    replaced = await resolver_config.install(host, chosen)
+    target = resolver_config.macos_resolver_file(chosen) if host.is_macos else RESOLVED_DROP_IN
+    lines.append(
+        f"resolver: names under .{chosen} are looked up at {RESOLVER_ADDRESS} port "
+        f"{RESOLVER_PORT} ({target}"
+        + ("" if host.is_macos else f", {RESOLVED_UNIT} reloaded")
+        + ")"
+    )
+    lines += [f"removed {path} (the previous domain)" for path in replaced]
     await _mkcert_install(host, user, mkcert)
     lines.append(f"mkcert: CA installed for {user} (`mkcert -install` as {user})")
     return SetupResult(user, lines)
 
 
-async def uninstall(host: Host) -> SetupResult:
-    """Remove the helper, its sudoers rule and the launchd job; keep the mkcert CA."""
+async def uninstall(host: Host, docker: Docker) -> SetupResult:
+    """Remove the resolver configuration (of whichever domain was installed), the resolver,
+    the helper, its sudoers rule and the launchd job; keep the mkcert CA."""
     user = host.env.get("SUDO_USER", "")
     _require_euid_root(host)
-    lines: list[str] = []
+    lines = [f"removed {path}" for path in await resolver_config.remove(host)]
     for path in (HELPER_PATH, SUDOERS_PATH):
         if _remove(host.path(path)):
             lines.append(f"removed {path}")
@@ -113,6 +157,17 @@ async def uninstall(host: Host) -> SetupResult:
         if aliased:
             await _run_checked(host, ["/bin/sh", "-c", unalias_script(aliased)])
             lines.append(f"removed the lo0 aliases of {len(aliased)} /24 blocks")
+    # Last, and with the invoking user's Docker: root's may not be the one they use (on
+    # macOS the Docker context lives in the user's account).
+    try:
+        await docker.remove_resolver(as_user=user if _valid_user(user) else None)
+    except SandboxError as exc:
+        raise SandboxError(
+            "everything else setup installed was removed, but the resolver could not be "
+            f"removed:\n{exc}\nWith Docker running, rerun `{SETUP_COMMAND} --uninstall`, or "
+            f"remove it yourself: docker rm --force {RESOLVER_CONTAINER}"
+        ) from exc
+    lines.append(f"removed the resolver (container {RESOLVER_CONTAINER}), if there was one")
     lines.append(
         "the mkcert CA was left installed (other tools may rely on it); "
         "to remove it, run as yourself: mkcert -uninstall"
@@ -144,16 +199,50 @@ def _require_root(host: Host) -> str:
     return user
 
 
-def _user_config(host: Host, user: str) -> Config:
-    """The invoking user's config (sudo resets HOME, so it is found through their account)."""
+def _user_config_path(host: Host, user: str) -> Path:
+    """The invoking user's config file (sudo resets HOME, so it is found through their
+    account); it need not exist unless ``SANDBOX_CONFIG`` names it."""
     named = host.env.get("SANDBOX_CONFIG")
     if named:
-        return load_config(Path(named))
+        return Path(named)
     home = host.homes(user)
     if home is None:
         raise SandboxError(f"user {user!r} has no home directory")
-    path = home / ".config" / "sandbox" / "config.yaml"
-    return load_config(path) if path.is_file() else Config()
+    return home / ".config" / "sandbox" / "config.yaml"
+
+
+def _load_user_config(host: Host, path: Path) -> Config:
+    if host.env.get("SANDBOX_CONFIG") or path.is_file():
+        return load_config(path)
+    return Config()
+
+
+def _user_config(host: Host, user: str) -> Config:
+    return _load_user_config(host, _user_config_path(host, user))
+
+
+def _chosen_domain(requested: str | None, config: Config) -> str:
+    if requested is None:
+        return config.domain
+    try:
+        return validate_domain(requested)
+    except ValueError as exc:
+        raise SandboxError(f"--domain: {exc}") from exc
+
+
+async def _require_resolver_support(host: Host, domain: str) -> None:
+    """Refuse a Linux machine whose lookups setup cannot point at the resolver."""
+    if host.is_macos or await resolver_config.has_systemd_resolved(host):
+        return
+    raise SandboxError(
+        "systemd-resolved is not running on this machine, and setup can only point "
+        "systemd-resolved at the resolver; nothing was installed.\n"
+        f"Send .{domain} to the resolver yourself: with dnsmasq as this machine's DNS server "
+        "(NetworkManager's dnsmasq included), add this line to its configuration and restart "
+        f"it:\n  {resolver_config.manual_line(domain)}\n"
+        f"Any other DNS server needs the same rule: forward {domain} to {RESOLVER_ADDRESS} "
+        f"port {RESOLVER_PORT}."
+    )
 
 
 def _pool_blocks(pool: IPv4Network, sets: int) -> list[IPv4Network]:
@@ -372,8 +461,54 @@ async def _install_alias_pool(host: Host, pool: IPv4Network, blocks: Sequence[IP
     await _run_checked(host, ["/bin/sh", "-c", alias_script(blocks)])
 
 
+def config_with_domain(text: str, domain: str) -> str:
+    """``text`` (a config file) with its ``domain`` key set, everything else as it was."""
+    entry = yaml.safe_dump({"domain": domain}, default_flow_style=False).strip()
+    lines = text.splitlines()
+    before = _mapping(text)
+    found = [index for index, line in enumerate(lines) if _DOMAIN_KEY.match(line)]
+    if len(found) == 1:
+        edited = "\n".join([*lines[: found[0]], entry, *lines[found[0] + 1 :]]) + "\n"
+    elif not found and "domain" not in (before or {}):
+        edited = "\n".join([*lines, entry]) + "\n"
+    else:
+        edited = ""
+    if edited and _mapping(edited) == {**(before or {}), "domain": domain}:
+        return edited
+    # Not a layout a line edit is safe on (a flow mapping, a quoted key): rewrite it.
+    return dump_yaml({**(before or {}), "domain": domain})
+
+
+def _mapping(text: str) -> dict[str, Any] | None:
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if data is None:
+        return {}
+    return cast(dict[str, Any], data) if isinstance(data, dict) else None
+
+
+async def _record_domain(host: Host, user: str, path: Path, domain: str) -> None:
+    """Write ``domain`` into the user's config, as that user: root never creates or owns
+    anything in their home directory."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    argv = [*_as_user(user), "/bin/sh", "-c", _WRITE_FILE, "sh", str(path),
+            config_with_domain(text, domain)]  # fmt: skip
+    status, output = await host.run(argv)
+    if status != 0:
+        raise SandboxError(f"could not write `domain: {domain}` to {path} as {user}: {output}")
+
+
+def _as_user(user: str) -> list[str]:
+    return ["sudo", "-u", user, "-H", "--"]
+
+
 async def _mkcert_install(host: Host, user: str, mkcert: str) -> None:
-    argv = ["sudo", "-u", user, "-H", "--", mkcert, "-install"]
+    argv = [*_as_user(user), mkcert, "-install"]
     status, output = await host.run(argv)
     if status != 0:
         raise SandboxError(f"`mkcert -install` as {user} failed:\n{output}")

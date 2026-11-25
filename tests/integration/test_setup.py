@@ -1,11 +1,12 @@
 """`sandbox setup` against the real system tools, installing into a temp root.
 
 The real install into ``/`` (helper, sudoers rule, `mkcert -install`, `/etc/hosts`) is
-covered by the end-to-end suite on a sudo runner. Here the commands that only *read* the
-machine or check a file run for real: `visudo -c` on the generated rule, `ip`/`ifconfig`
-for the addresses in use. On macOS (as root) the generated alias script runs for real and
-`up`'s preflight must then see the pool; that path needs a Mac with sudo and is otherwise
-verified by hand (see the README's setup section).
+covered by the end-to-end suite on a sudo runner, as is pointing the real systemd-resolved
+at the resolver. Here the commands that only *read* the machine or check a file run for
+real: `visudo -c` on the generated rule, `ip`/`ifconfig` for the addresses in use. On macOS
+(as root) the generated alias script runs for real and `up`'s preflight must then see the
+pool; that path needs a Mac with sudo and is otherwise verified by hand (see the README's
+setup section).
 """
 
 import asyncio
@@ -20,6 +21,7 @@ import pytest
 
 from sandbox.platforms import Host, run_command
 from sandbox.preflight import aliased_blocks, aliased_ips
+from sandbox.resolver_config import installed_domain
 from sandbox.setup import HELPER_PATH, LAUNCHD_PLIST, SUDOERS_PATH
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
@@ -28,14 +30,15 @@ pytestmark = pytest.mark.integration
 
 
 class MostlyRealRunner:
-    """Runs every command for real except `sudo` (mkcert -install as the user) and
-    `launchctl` (the machine's own launchd job is never touched): those are recorded."""
+    """Runs every command for real except `sudo` (mkcert -install as the user), `launchctl`
+    and `systemctl` (the machine's own launchd job and systemd-resolved are never touched):
+    those are recorded, and succeed."""
 
     def __init__(self) -> None:
         self.faked: list[list[str]] = []
 
     async def __call__(self, argv: Sequence[str]) -> tuple[int, str]:
-        if argv[0] in ("sudo", "launchctl"):
+        if argv[0] in ("sudo", "launchctl", "systemctl"):
             self.faked.append(list(argv))
             return 0, ""
         return await run_command(argv)
@@ -78,8 +81,11 @@ def test_on_linux_setup_installs_a_rule_visudo_accepts(env: Env, tmp_path: Path)
     assert host.path(SUDOERS_PATH).is_file()
     assert host.path(HELPER_PATH).is_file()
     assert not host.path(LAUNCHD_PLIST).exists()
-    assert runner.faked == [["sudo", "-u", "dev", "-H", "--", str(root / "bin" / "mkcert"),
-                             "-install"]]  # fmt: skip
+    assert installed_domain(host) == "test"
+    assert [call for call in runner.faked if call[0] == "sudo"] == [
+        ["sudo", "-u", "dev", "-H", "--", str(root / "bin" / "mkcert"), "-install"]
+    ]
+    assert ["systemctl", "reload-or-restart", "systemd-resolved.service"] in runner.faked
 
 
 @pytest.mark.skipif(

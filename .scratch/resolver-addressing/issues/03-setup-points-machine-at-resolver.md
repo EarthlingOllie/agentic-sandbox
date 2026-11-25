@@ -4,14 +4,14 @@
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `setup --domain X` writes `domain: X` into the invoking user's config as that user, keeping the file's other keys; without `--domain` it uses the configured domain, or `test`
-- [ ] On macOS it installs the per-domain resolver configuration naming the resolver's loopback address and port
-- [ ] On Linux with systemd-resolved it installs a per-domain drop-in and reloads; without systemd-resolved it refuses before installing anything and prints the line to add by hand
-- [ ] Rerunning with a different `--domain` removes the previous domain's configuration and installs the new one
-- [ ] Setup records which domain it installed, where `up` can read it
-- [ ] Setup starts no containers and still installs the mkcert CA as the invoking user
-- [ ] `setup --uninstall` removes the resolver configuration for the installed domain and stops and removes the resolver, leaves the mkcert CA, and prints the `mkcert -uninstall` hint
-- [ ] Setup's summary output names what it installed
-- [ ] Unit tests cover macOS, systemd-resolved, unsupported Linux, a domain change and uninstall with the fake host
+- [x] `setup --domain X` writes `domain: X` into the invoking user's config as that user, keeping the file's other keys; without `--domain` it uses the configured domain, or `test`
+- [x] On macOS it installs the per-domain resolver configuration naming the resolver's loopback address and port
+- [x] On Linux with systemd-resolved it installs a per-domain drop-in and reloads; without systemd-resolved it refuses before installing anything and prints the line to add by hand
+- [x] Rerunning with a different `--domain` removes the previous domain's configuration and installs the new one
+- [x] Setup records which domain it installed, where `up` can read it
+- [x] Setup starts no containers and still installs the mkcert CA as the invoking user
+- [x] `setup --uninstall` removes the resolver configuration for the installed domain and stops and removes the resolver, leaves the mkcert CA, and prints the `mkcert -uninstall` hint
+- [x] Setup's summary output names what it installed
+- [x] Unit tests cover macOS, systemd-resolved, unsupported Linux, a domain change and uninstall with the fake host

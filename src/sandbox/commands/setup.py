@@ -1,4 +1,5 @@
-"""``sudo sandbox setup [--uninstall] [--sets N]``: the one-time privileged install."""
+"""``sudo sandbox setup [--domain X] [--uninstall] [--sets N]``: the one-time privileged
+install."""
 
 import asyncio
 from typing import Annotated
@@ -16,8 +17,8 @@ def setup(
         bool,
         typer.Option(
             "--uninstall",
-            help="Remove the hosts helper, its sudoers rule and the launchd job "
-            "(the mkcert CA is kept).",
+            help="Remove the resolver configuration, the resolver, the hosts helper, its "
+            "sudoers rule and the launchd job (the mkcert CA is kept).",
         ),
     ] = False,
     sets: Annotated[
@@ -28,15 +29,33 @@ def setup(
             help="macOS: how many sets can run at once (lo0 alias /24 blocks).",
         ),
     ] = DEFAULT_SETS,
+    domain: Annotated[
+        str | None,
+        typer.Option(
+            "--domain",
+            metavar="DOMAIN",
+            help="The DNS suffix of set hostnames; recorded in your config. "
+            "Default: the configured domain, or test.",
+        ),
+    ] = None,
 ) -> None:
-    """Install what sandbox needs root for (run once, with sudo): the hosts helper and its
-    sudoers rule, the macOS loopback alias pool, and the mkcert CA (as you, not root).
+    """Install what sandbox needs root for (run once, with sudo): point this machine's DNS
+    lookups under the domain at the resolver, the mkcert CA (as you, not root), the hosts
+    helper and its sudoers rule, and the macOS loopback alias pool.
     """
     if isinstance(ctx.meta.get(SET_META_KEY), str):
-        usage_error("setup takes no set: sudo sandbox setup [--uninstall] [--sets N]")
-    host = get_deps(ctx).host
+        usage_error("setup takes no set: sudo sandbox setup [--domain X] [--uninstall] [--sets N]")
+    if remove and domain is not None:
+        usage_error(
+            "--uninstall takes no --domain: it removes the configuration of whichever domain "
+            "was installed"
+        )
+    deps = get_deps(ctx)
+    host = deps.host
     try:
-        result = asyncio.run(uninstall(host) if remove else install(host, sets))
+        result = asyncio.run(
+            uninstall(host, deps.docker) if remove else install(host, sets, domain)
+        )
     except SandboxError as exc:
         failure(exc)
     typer.echo(f"sandbox setup {'removed' if remove else 'installed'}:")

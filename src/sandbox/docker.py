@@ -74,12 +74,25 @@ class Docker(Protocol):
         """Take the resolver off ``network``; a no-op when it is not there (or not running)."""
         ...
 
+    async def remove_resolver(self, as_user: str | None = None) -> None:
+        """Stop and remove the resolver's container and its own network; a no-op when there
+        is none. ``as_user``: run Docker as that user (``sudo -u``), for a caller running as
+        root on a machine where only the user's account knows how to reach Docker."""
+        ...
+
 
 class SubprocessDocker:
     """Runs the real ``docker`` CLI."""
 
-    async def _check(self, args: Sequence[str], env: Mapping[str, str] | None = None) -> str:
+    async def _check(
+        self,
+        args: Sequence[str],
+        env: Mapping[str, str] | None = None,
+        as_user: str | None = None,
+    ) -> str:
         argv = ["docker", *args]
+        if as_user is not None:
+            argv = ["sudo", "-u", as_user, "-H", "--", *argv]
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv,
@@ -155,6 +168,13 @@ class SubprocessDocker:
         except DockerError:
             if network in (await self._resolver_networks() or ()):
                 raise
+
+    async def remove_resolver(self, as_user: str | None = None) -> None:
+        # By project name alone: no compose file or variables are needed to remove it, and
+        # the set networks it is on are left to their sets.
+        await self._check(
+            ["compose", "-p", RESOLVER_PROJECT, "down", "--remove-orphans"], as_user=as_user
+        )
 
     async def _resolver_networks(self) -> set[str] | None:
         """The networks the resolver's container is on; None when there is no such container."""

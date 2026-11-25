@@ -38,6 +38,10 @@ class FakeDocker:
     resolver_starts: int = 0
     # When set, starting the resolver fails with this message.
     resolver_error: str | None = None
+    # Who each removal of the resolver ran as (None: whoever runs sandbox), in call order.
+    resolver_removals: list[str | None] = field(default_factory=list[str | None])
+    # When set, removing the resolver fails with this message.
+    resolver_removal_error: str | None = None
 
     @property
     def resolver_networks(self) -> set[str]:
@@ -58,6 +62,13 @@ class FakeDocker:
 
     async def detach_resolver(self, network: str) -> None:
         self.compose.resolver_networks.discard(network)
+
+    async def remove_resolver(self, as_user: str | None = None) -> None:
+        if self.resolver_removal_error is not None:
+            raise DockerError(self.resolver_removal_error)
+        self.resolver_removals.append(as_user)
+        self.resolver_domain = None
+        self.compose.resolver_networks.clear()
 
     async def set_containers(self) -> list[Container]:
         found: list[Container] = []

@@ -26,8 +26,10 @@ from sandbox.compose.resolver import (
     resolver_image,
 )
 from sandbox.git import SubprocessGit
+from sandbox.resolver_config import RESOLVED_DROP_IN, resolved_drop_in_text
 from tests.conftest import Env, invoke
 from tests.dns import NOERROR, REFUSED, Answer, lookup
+from tests.fakes_host import make_host
 from tests.integration.conftest import git, resolver_networks, unique_set
 
 pytestmark = pytest.mark.integration
@@ -254,3 +256,32 @@ def test_clearing_one_set_leaves_the_resolver_running_and_other_sets_resolving(
     running = docker("container", "inspect", "--format", "{{.State.Running}}", RESOLVER_CONTAINER)
     assert running == "true"
     assert ask(f"app.{B}.test").addresses == (address(B),)
+
+
+def test_setup_uninstall_stops_and_removes_the_resolver_and_the_next_up_brings_it_back(
+    repo: Path, tmp_path: Path
+) -> None:
+    """`setup --uninstall` with the real Docker. The machine is a temp root whose `systemctl`
+    is recorded, not run, and there is no invoking user, so Docker runs as whoever runs the
+    tests. It removes the resolver every set on this machine shares: a developer's own
+    running sets resolve again after their next `up`."""
+    up(A, "--repos", "api")
+    machine = tmp_path / "machine"
+    drop_in = machine / RESOLVED_DROP_IN.relative_to("/")
+    drop_in.parent.mkdir(parents=True)
+    drop_in.write_text(resolved_drop_in_text("test"))
+    host = make_host(machine, sudo_user=None)
+
+    result = invoke(["setup", "--uninstall"], SubprocessGit(), SubprocessCompose(), host=host)
+
+    assert result.exit_code == 0, result.output
+    assert not drop_in.exists()
+    assert docker("ps", "--all", "--quiet", "--filter", f"name=^{RESOLVER_CONTAINER}$") == ""
+    assert "sandbox_resolver_default" not in networks()
+    # The set is untouched: its container runs on, on its own network.
+    assert address(A)
+    # Removing a resolver that is not there is fine, and `up` starts a new one.
+    again = invoke(["setup", "--uninstall"], SubprocessGit(), SubprocessCompose(), host=host)
+    assert again.exit_code == 0, again.output
+    up(A)
+    assert ask(f"app.{A}.test").addresses == (address(A),)

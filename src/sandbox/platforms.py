@@ -2,9 +2,10 @@
 
 sandbox relies on fcntl locking and POSIX tooling (Linux and macOS only). :class:`Host` is
 everything sandbox reads about the machine beyond its own config: the platform, the
-filesystem root that system files (the hosts helper, its sudoers rule, the launchd job) live
-under, how commands run, who runs them and as whom. Production uses the real machine;
-tests pass a :class:`Host` rooted in a temp directory with a fake command runner.
+filesystem root that system files (the per-domain resolver configuration, the hosts helper,
+its sudoers rule, the launchd job) live under, how commands run, who runs them and as whom.
+Production uses the real machine; tests pass a :class:`Host` rooted in a temp directory with
+a fake command runner.
 """
 
 import asyncio
