@@ -59,9 +59,8 @@ def mysql_repo(env: Env) -> Iterator[Path]:
 
 
 def host_state(env: Env) -> list[str]:
-    """What sandbox keeps outside set directories: the hosts file and non-lock state files."""
-    kept = [p for p in env.state_dir.rglob("*") if p.is_file() and p.suffix != ".lock"]
-    return sorted(str(p) for p in [*kept, *([env.hosts_file] if env.hosts_file.exists() else [])])
+    """What sandbox keeps outside set directories: non-lock state files."""
+    return sorted(str(p) for p in env.state_dir.rglob("*") if p.is_file() and p.suffix != ".lock")
 
 
 def project_resources(project: str) -> list[str]:

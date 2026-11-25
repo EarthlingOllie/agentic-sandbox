@@ -2,10 +2,9 @@
 
 sandbox relies on fcntl locking and POSIX tooling (Linux and macOS only). :class:`Host` is
 everything sandbox reads about the machine beyond its own config: the platform, the
-filesystem root that system files (the per-domain resolver configuration, the hosts helper,
-its sudoers rule, the launchd job) live under, how commands run, who runs them and as whom.
-Production uses the real machine; tests pass a :class:`Host` rooted in a temp directory with
-a fake command runner.
+filesystem root that system files (the per-domain resolver configuration) live under, how
+commands run, who runs them and as whom. Production uses the real machine; tests pass a
+:class:`Host` rooted in a temp directory with a fake command runner.
 """
 
 import asyncio
@@ -29,7 +28,7 @@ def ensure_supported_platform(platform: str | None = None) -> None:
     if current.startswith("win") or current == "cygwin":
         raise SandboxError(
             f"unsupported platform {current!r}: sandbox runs on Linux and macOS only "
-            "(it needs fcntl file locking, loopback aliases and /etc/hosts)"
+            "(it needs fcntl file locking and POSIX tooling)"
         )
     if not current.startswith(SUPPORTED_PLATFORMS):
         raise SandboxError(
@@ -81,13 +80,11 @@ class Host:
 
     # Looked up when a Host is made, not at import, so tests can pin it.
     platform: str = field(default_factory=lambda: current_platform())
-    # System paths (/usr/local/bin/..., /etc/sudoers.d/...) are taken relative to this.
+    # System paths (/etc/resolver/..., /etc/systemd/...) are taken relative to this.
     root: Path = Path("/")
     run: Runner = run_command
     euid: int = field(default_factory=_geteuid)
     env: Mapping[str, str] = field(default_factory=lambda: dict(os.environ))
-    # The root-owned interpreter the installed hosts helper runs under.
-    python: Path = Path("/usr/bin/python3")
     homes: Callable[[str], Path | None] = home_of
 
     @property
@@ -95,5 +92,5 @@ class Host:
         return self.platform == MACOS
 
     def path(self, system_path: Path | str) -> Path:
-        """``system_path`` (absolute, e.g. ``/etc/hosts``) on this host's filesystem."""
+        """``system_path`` (absolute, e.g. ``/etc/resolver/test``) on this host's filesystem."""
         return self.root / Path(system_path).relative_to("/")

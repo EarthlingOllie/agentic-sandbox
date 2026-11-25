@@ -10,8 +10,8 @@ Two sources describe sets, and neither alone is the truth:
 A set with a plan is **running** when every service it expects (its repos' services and
 the agent) has a running container, **stopped** when none does and **partial** in between.
 Anything else is **orphaned**: containers whose set has no plan, or a set directory that
-never got one. ``prune`` clears orphans. A lease file left by the loopback model is not
-read: nothing leases IPs any more, so nothing could clear an orphan it described.
+never got one. ``prune`` clears orphans. Nothing under the state directory describes a
+set, so nothing there can make one appear.
 
 One set's status first syncs each agent clone's ``agent/<set>`` into its source repo
 (``sandbox.clones``), then reports each clone's branch and changes.

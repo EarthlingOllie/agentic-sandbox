@@ -15,7 +15,7 @@ from sandbox.resolver_config import installed_domain
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
 from tests.fakes_docker import FakeDocker
-from tests.fakes_host import FakeRunner, lo0_with_aliases, make_host
+from tests.fakes_host import FakeRunner, make_host
 
 MACOS_RESOLVER_DIR = "etc/resolver"
 DROP_IN = "etc/systemd/resolved.conf.d/sandbox.conf"
@@ -46,8 +46,6 @@ def linux(root: Path, bin_dir: Path, **kwargs: Any) -> tuple[Host, FakeRunner]: 
 
 def macos(root: Path, bin_dir: Path) -> tuple[Host, FakeRunner]:
     runner = FakeRunner()
-    runner.answer(["ifconfig", "lo0"], 0, lo0_with_aliases())
-    runner.answer(["ifconfig", "-a"], 0, lo0_with_aliases())
     return make_host(root, path=str(bin_dir), platform="darwin", runner=runner), runner
 
 
@@ -155,7 +153,7 @@ def test_setup_with_a_domain_writes_it_into_the_users_config_keeping_the_other_k
     config.parent.mkdir(parents=True)
     config.write_text(
         "# where my sets live\nsets_root: ~/work/sets\n"
-        "domain: old.test  # was\nip_pool: 127.50.0.0/16\n"
+        "domain: old.test  # was\ntemplates_root: ~/plans\n"
     )
     h, runner = linux(root, bin_dir)
 
@@ -163,7 +161,7 @@ def test_setup_with_a_domain_writes_it_into_the_users_config_keeping_the_other_k
 
     assert result.exit_code == 0, result.output
     assert config.read_text() == (
-        "# where my sets live\nsets_root: ~/work/sets\ndomain: dev.test\nip_pool: 127.50.0.0/16\n"
+        "# where my sets live\nsets_root: ~/work/sets\ndomain: dev.test\ntemplates_root: ~/plans\n"
     )
     assert len(writes_as(runner, "dev")) == 1  # written as the user, never by root
     assert "Domains=~dev.test" in (root / DROP_IN).read_text()

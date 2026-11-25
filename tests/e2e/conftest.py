@@ -2,10 +2,9 @@
 
 The suite runs only when ``SANDBOX_E2E=1``. It is meant for a throwaway Linux runner with
 passwordless sudo (the ``e2e`` GitHub Actions workflow), because it does what a user does
-once and nothing else may: ``sudo sandbox setup`` installs the hosts helper into
-``/usr/local``, a sudoers rule and the mkcert CA (into the system trust store), and every
-``up`` writes the real ``/etc/hosts``. It ends with ``setup --uninstall``; the mkcert CA is
-left installed, as ``--uninstall`` itself leaves it.
+once and nothing else may: ``sudo sandbox setup`` points the machine's systemd-resolved at
+the resolver and installs the mkcert CA (into the system trust store). It ends with
+``setup --uninstall``; the mkcert CA is left installed, as ``--uninstall`` itself leaves it.
 
 Unlike the unit and integration suites, nothing runs in-process and nothing is faked: each
 step is a ``sandbox`` subprocess, run as the (non-root) invoking user with their real
@@ -27,7 +26,7 @@ import pytest
 
 from sandbox.compose import project_name
 from sandbox.compose.agent import IMAGE_DIR, default_image
-from sandbox.hosts_block import HELPER_PATH
+from sandbox.compose.resolver import RESOLVER_CONTAINER
 from sandbox.names import validate_set_name
 
 # Opt-in only: the suite changes the machine it runs on (see the module docstring).
@@ -37,8 +36,6 @@ SKIP_REASON = (
 )
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
-# The pool the suite's sets lease from; setup refuses if anything else uses it.
-IP_POOL = os.environ.get("SANDBOX_E2E_IP_POOL", "127.42.0.0/16")
 RUN_ID = os.environ.get("SANDBOX_TEST_RUN_ID") or secrets.token_hex(3)
 # Generous: the first `up` may build the agent image and pull mysql.
 STEP_TIMEOUT = 1200
@@ -55,7 +52,7 @@ def _require_runner() -> None:
         pytest.fail("the end-to-end suite runs on Linux (the macOS path is a manual checklist)")
     if os.geteuid() == 0:
         pytest.fail("run the end-to-end suite as a non-root user with passwordless sudo")
-    for tool in ("docker", "git", "mkcert", "curl", "getent", "visudo"):
+    for tool in ("docker", "git", "mkcert", "curl", "getent"):
         if shutil.which(tool) is None:
             pytest.fail(f"{tool} is not installed")
     if subprocess.run(["sudo", "-n", "true"], capture_output=True, check=False).returncode:
@@ -151,16 +148,17 @@ def _make_repo(code: Path, name: str, fixture: str, env: dict[str, str]) -> Path
 
 
 def _cleanup(machine: Machine) -> None:
-    """Best effort, so a failed run leaves no containers, hosts blocks or sudo rule behind."""
+    """Best effort, so a failed run leaves no containers or resolver configuration behind."""
     for name in machine.created_sets:
+        machine.command(
+            ["docker", "network", "disconnect", "--force", f"{project_name(name)}_default",
+             RESOLVER_CONTAINER]
+        )  # fmt: skip
         machine.command(
             ["docker", "compose", "-p", project_name(name), "down", "--volumes",
              "--remove-orphans"]
         )  # fmt: skip
-        if Path(HELPER_PATH).exists():
-            machine.command(["sudo", "-n", str(HELPER_PATH), "remove", name])
-    if Path(HELPER_PATH).exists():
-        machine.run("setup", "--uninstall", sudo=True)
+    machine.run("setup", "--uninstall", sudo=True)
 
 
 @pytest.fixture
@@ -172,10 +170,7 @@ def machine(tmp_path: Path) -> Iterator[Machine]:
     config = root / "config.yaml"
     sets_root = root / "sets"
     config.write_text(
-        f"ip_pool: {IP_POOL}\n"
-        f"sets_root: {sets_root}\n"
-        f"templates_root: {root / 'plans'}\n"
-        f"state_dir: {root / 'state'}\n"
+        f"sets_root: {sets_root}\ntemplates_root: {root / 'plans'}\nstate_dir: {root / 'state'}\n"
     )
     env = {
         **os.environ,

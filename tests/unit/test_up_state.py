@@ -215,11 +215,11 @@ def test_failing_step_after_compose_up_rolls_back_in_reverse_order(
 
     order: list[str] = []
 
-    async def write_hosts(ctx: provisioner.UpContext) -> None:
-        order.append("hosts written")
+    async def later_step(ctx: provisioner.UpContext) -> None:
+        order.append("later step ran")
 
-    async def remove_hosts(ctx: provisioner.UpContext) -> None:
-        order.append(f"hosts removed, compose running={PROJECT in compose.running}")
+    async def undo_later_step(ctx: provisioner.UpContext) -> None:
+        order.append(f"later step undone, compose running={PROJECT in compose.running}")
 
     async def broken(ctx: provisioner.UpContext) -> None:
         raise SandboxError("init hook failed")
@@ -229,7 +229,7 @@ def test_failing_step_after_compose_up_rolls_back_in_reverse_order(
         "PROVISION_STEPS",
         [
             *provisioner.PROVISION_STEPS,
-            provisioner.Step("hosts", write_hosts, rollback=remove_hosts),
+            provisioner.Step("later", later_step, rollback=undo_later_step),
             provisioner.Step("hooks", broken),
         ],
     )
@@ -240,8 +240,8 @@ def test_failing_step_after_compose_up_rolls_back_in_reverse_order(
 
     assert result.exit_code == 1
     assert "init hook failed" in result.stderr
-    # Later steps are undone first: the hosts block goes while services still run.
-    assert order == ["hosts written", "hosts removed, compose running=True"]
+    # Later steps are undone first: this one while services still run.
+    assert order == ["later step ran", "later step undone, compose running=True"]
     assert compose.running == {}
 
 

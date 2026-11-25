@@ -16,7 +16,7 @@
   the repos' init hooks in them (``sandbox.hooks``), then attach the resolver to the set
   (``sandbox.resolver``); on failure or Ctrl-C, started steps roll back.
 
-No IP is leased and no hosts block is written: a set's addressing state is Docker's alone.
+Nothing outside Docker records where a set is: its addressing state is Docker's alone.
 
 A later concern adds its step in its own module and one line to one of the two lists.
 After the steps (and on a no-op), ``up`` syncs each clone's ``agent/<set>`` into its source

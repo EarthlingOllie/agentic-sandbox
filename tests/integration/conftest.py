@@ -10,9 +10,6 @@ at its container's own address (:func:`container_address`), which is also what t
 answers for its set hostname (:func:`resolve`, asking the resolver directly: pointing the
 operating system at it is ``setup``'s job).
 
-Only the macOS alias test of ``setup`` still needs a loopback pool of its own
-(:func:`ip_pool`, see :mod:`tests.ip_pools`; ``SANDBOX_TEST_IP_POOL`` pins it).
-
 ``up`` refuses a machine that does not send the domain to the resolver. In-process runs get a
 machine setup has run on from ``tests.conftest.invoke``; tests that start real ``sandbox``
 processes start them with :func:`sandbox_argv`, which gives them the same machine (the
@@ -28,15 +25,13 @@ down (:func:`pytest_runtest_teardown`). The resolver itself is left running, lik
 ``down``.
 """
 
-import itertools
 import json
 import os
 import secrets
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
-from ipaddress import IPv4Network
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -51,42 +46,11 @@ from sandbox.compose.resolver import (
 from sandbox.names import validate_set_name
 from tests.conftest import Env, set_up_machine
 from tests.dns import lookup
-from tests.ip_pools import claim_run_pool
 
 if shutil.which("git") is None:
     pytest.skip("git is not installed", allow_module_level=True)
 
 RUN_ID = os.environ.get("SANDBOX_TEST_RUN_ID") or secrets.token_hex(4)
-
-TEST_POOL_PREFIX = 20  # 16 /24 blocks per test
-
-
-@pytest.fixture(scope="session")
-def run_ip_pool() -> Iterator[IPv4Network]:
-    """This run's own loopback /16, held for the whole session."""
-    pinned = os.environ.get("SANDBOX_TEST_IP_POOL")
-    if pinned:
-        yield IPv4Network(pinned)
-        return
-    pool, handle = claim_run_pool()
-    try:
-        yield pool
-    finally:
-        handle.close()
-
-
-_test_pools = itertools.count()
-
-
-@pytest.fixture
-def ip_pool(env: Env, run_ip_pool: IPv4Network) -> IPv4Network:
-    """A loopback pool of this test's own: the next /20 of the run's /16, in its config."""
-    blocks = list(run_ip_pool.subnets(new_prefix=TEST_POOL_PREFIX))
-    pool = blocks[next(_test_pools) % len(blocks)]
-    with env.config_file.open("a") as config:
-        config.write(f"ip_pool: {pool}\n")
-    return pool
-
 
 # The CLI with the real collaborators, on a host whose system files are under argv[1].
 _CLI_ON_MACHINE = (

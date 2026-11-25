@@ -2,9 +2,8 @@
 
 Pruning a set detaches the resolver from it (``sandbox.resolver``; the resolver keeps
 running for other sets), then removes its Compose project (containers, network, volumes).
-Nothing else describes where a set is: no IP is leased and no hosts block is written. The
-set directory, plan and the agent's clones are never
-touched: ``destroy`` removes those. A set with a plan and anything running is refused
+Nothing else describes where a set is. The set directory, plan and the agent's clones are
+never touched: ``destroy`` removes those. A set with a plan and anything running is refused
 (``down`` it first).
 
 Bare ``prune`` asks the status reconciliation (``sandbox.status``) for every orphaned set

@@ -21,9 +21,6 @@ from tests.fakes_host import FakeRunner, make_host, point_at_resolver
 
 MYSQL = "services:\n  mysql:\n    image: mysql:8.4\n"
 WEB = "services:\n  api:\n    image: nginx\n    x-sandbox: {web: true}\n"
-HELPER = "usr/local/bin/sandbox-hosts"
-SUDOERS = "etc/sudoers.d/sandbox-hosts"
-PLIST = "Library/LaunchDaemons/sandbox.loopback-aliases.plist"
 ORBSTACK_SETTINGS = "rosetta: true\nnetwork_bridge: {}\nmemory_mib: 8192\n"
 
 
@@ -295,18 +292,10 @@ def test_a_set_with_a_web_app_still_needs_the_mkcert_ca(linux: Machine) -> None:
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin"])
-def test_the_hosts_helper_its_sudoers_rule_and_the_alias_pool_are_not_checked(
+def test_up_asks_for_no_privilege_and_reads_no_interface(
     env: Env, root: Path, platform: str
 ) -> None:
-    """None of the three is installed, the config names no hosts file, and `sudo -n -l` and
-    `ifconfig lo0` would both fail: `up` asks neither."""
-    env.config_file.write_text(
-        "".join(
-            line
-            for line in env.config_file.read_text().splitlines(keepends=True)
-            if "hosts_file" not in line
-        )
-    )
+    """`sudo -n -l` and `ifconfig lo0` would both fail: `up` asks neither."""
     machine = Machine(env, root, platform)
     machine.set_up()
     machine.runner.answer(["sudo"], 1, "sudo: a password is required")
@@ -315,6 +304,5 @@ def test_the_hosts_helper_its_sudoers_rule_and_the_alias_pool_are_not_checked(
     result = machine.up()
 
     assert result.exit_code == 0, result.output
-    assert not any((root / name).exists() for name in (HELPER, SUDOERS, PLIST))
     assert machine.runner.ran("sudo") == []
     assert machine.runner.ran("ifconfig") == []

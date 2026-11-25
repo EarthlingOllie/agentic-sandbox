@@ -4,7 +4,7 @@
 - ``services``: reading a repo's ``.sandbox/compose.yaml`` and the set-label fragment.
 - ``override``: assembling the per-set ``override.yaml`` from registered fragments.
 - ``dedup``: one instance per same-named service across repos, or a conflict diff.
-- ``network``: each service's IP-bound native ports and ``<service>.<set>.<domain>`` aliases.
+- ``network``: each service's ``<service>.<set>.<domain>`` aliases, and nothing published.
 - ``web``: HTTPS web apps (443, the unprivileged-port sysctl, TLS and CA mounts).
 - ``resolver``: the shared resolver's own Compose project, image tag and port.
 

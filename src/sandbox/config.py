@@ -6,11 +6,10 @@ can point the whole tool at a scratch directory by writing one config file and s
 """
 
 import os
-from ipaddress import IPv4Network
 from pathlib import Path
 from typing import Annotated, Final
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from sandbox.compose.agent import AgentOverride
 from sandbox.errors import SandboxError
@@ -18,8 +17,6 @@ from sandbox.names import DEFAULT_DOMAIN, validate_domain
 from sandbox.yamlio import read_yaml, validate_file
 
 CONFIG_ENV_VAR: Final = "SANDBOX_CONFIG"
-LOOPBACK: Final = IPv4Network("127.0.0.0/8")
-DEFAULT_IP_POOL: Final = IPv4Network("127.42.0.0/16")
 
 
 def config_home() -> Path:
@@ -59,21 +56,11 @@ class Config(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ip_pool: IPv4Network = Field(
-        default=DEFAULT_IP_POOL,
-        description="Loopback range sets lease /24 blocks from.",
-    )
     templates_root: HostPath = Field(default_factory=_default_templates_root)
     sets_root: HostPath = Field(default_factory=_default_sets_root)
     state_dir: HostPath = Field(
         default_factory=_default_state_dir,
-        description="Lock files, IP leases and other cross-process host state.",
-    )
-    hosts_file: HostPath | None = Field(
-        default=None,
-        description="Unset (the default): each set's hosts block goes into /etc/hosts through "
-        "`sudo -n sandbox-hosts`. A path: the block is written to that file directly, without "
-        "sudo (tests and unprivileged setups).",
+        description="Lock files and other cross-process host state.",
     )
     domain: Annotated[str, AfterValidator(validate_domain)] = Field(
         default=DEFAULT_DOMAIN,
@@ -87,18 +74,28 @@ class Config(BaseModel):
         "networks) merged over the default agent; pinned into each new set's plan.",
     )
 
-    @field_validator("ip_pool")
-    @classmethod
-    def _pool_is_loopback(cls, pool: IPv4Network) -> IPv4Network:
-        if not pool.subnet_of(LOOPBACK):
-            raise ValueError(f"must be inside {LOOPBACK}")
-        if pool.prefixlen > 24:
-            raise ValueError("must be a /24 or larger (each set leases one /24)")
-        return pool
-
     @property
     def lock_dir(self) -> Path:
         return self.state_dir / "locks"
+
+
+# Keys an earlier version read. Named one by one, so an upgraded config says what to delete
+# instead of failing as a typo would.
+REMOVED_KEYS: Final = {
+    "ip_pool": "sets no longer lease loopback addresses",
+    "hosts_file": "set hostnames are answered by the resolver, not written to a hosts file",
+}
+
+
+def _refuse_removed_keys(data: object, source: Path) -> None:
+    found = [key for key in REMOVED_KEYS if isinstance(data, dict) and key in data]
+    if found:
+        lines = [f"{source}: {len(found)} validation error(s)"]
+        lines += [
+            f"  {key}: no longer used ({REMOVED_KEYS[key]}); remove `{key}` from this file"
+            for key in found
+        ]
+        raise SandboxError("\n".join(lines))
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -114,4 +111,5 @@ def load_config(path: Path | None = None) -> Config:
             raise SandboxError(f"config file {resolved} does not exist")
         return Config()
     data = read_yaml(resolved)
+    _refuse_removed_keys(data, resolved)
     return validate_file(Config, {} if data is None else data, resolved)

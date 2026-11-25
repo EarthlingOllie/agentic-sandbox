@@ -33,7 +33,6 @@ class Env:
     sets_root: Path
     templates_root: Path
     state_dir: Path
-    hosts_file: Path
 
     def set_dir(self, name: str) -> Path:
         return self.sets_root / name
@@ -49,7 +48,7 @@ class Env:
 @pytest.fixture(autouse=True)
 def _linux_host(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests see a Linux host unless they pass a ``Host`` (``tests.fakes_host``), so a unit
-    run on a Mac never reads that Mac's lo0 aliases or setup state."""
+    run on a Mac never reads that Mac's setup state."""
     monkeypatch.setattr("sandbox.platforms.current_platform", lambda: "linux")
 
 
@@ -67,14 +66,11 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
         sets_root=root / "sets",
         templates_root=root / "plans",
         state_dir=root / "state",
-        # The hosts block is written straight to this file; never via sudo in tests.
-        hosts_file=root / "hosts",
     )
     environment.config_file.write_text(
         f"sets_root: {environment.sets_root}\n"
         f"templates_root: {environment.templates_root}\n"
         f"state_dir: {environment.state_dir}\n"
-        f"hosts_file: {environment.hosts_file}\n"
     )
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)

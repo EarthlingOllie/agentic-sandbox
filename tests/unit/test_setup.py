@@ -1,38 +1,40 @@
-"""`sudo sandbox setup [--uninstall] [--sets N]` installs what sandbox needs root for.
+"""`sudo sandbox setup [--uninstall]` installs what sandbox needs root for, and removes what
+an earlier version installed and nothing uses any more.
 
 Driven through the CLI seam with a fake host (``tests.fakes_host``): it is "root", its
-filesystem root is a temp directory, and every command it would run (`visudo`, `ip`,
-`ifconfig`, `launchctl`, `sudo -u ... mkcert`) is recorded and answered from a table. The
-installed helper bundle is real: tests run it under a real Python with ``-I -S``.
+filesystem root is a temp directory, and every command it would run (`launchctl`,
+`systemctl`, `sudo -u ... mkcert`, the script taking `lo0` aliases away) is recorded and
+answered from a table. Pointing the machine at the resolver is in ``test_setup_resolver``.
 """
 
 import plistlib
-import shutil
 import stat
 import subprocess
-import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
 from sandbox.platforms import Host
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
-from tests.fakes_host import FakeRunner, lo0_with_aliases, make_host
+from tests.fakes_host import FakeRunner, make_host
 
+# What the loopback model installed (literal paths: this is what is on upgraded machines).
 HELPER = "usr/local/bin/sandbox-hosts"
 BUNDLE = "usr/local/lib/sandbox-hosts"
 SUDOERS = "etc/sudoers.d/sandbox-hosts"
 PLIST = "Library/LaunchDaemons/sandbox.loopback-aliases.plist"
 LABEL = "sandbox.loopback-aliases"
+HOSTS = "etc/hosts"
+OWN_HOSTS = "127.0.0.1\tlocalhost\n::1 ip6-localhost\n"
 
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:
     path = tmp_path / "machine"
     (path / "etc").mkdir(parents=True)
-    (path / "etc" / "hosts").write_text("127.0.0.1\tlocalhost\n")
+    (path / HOSTS).write_text(OWN_HOSTS)
     return path
 
 
@@ -57,10 +59,6 @@ def setup(h: Host, *args: str):
 
 def mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
-
-
-def plist(root: Path) -> dict[str, Any]:
-    return cast(dict[str, Any], plistlib.loads((root / PLIST).read_bytes()))
 
 
 def assert_nothing_installed(root: Path) -> None:
@@ -98,112 +96,6 @@ def test_setup_takes_no_set(env: Env, root: Path, bin_dir: Path) -> None:
 
     assert result.exit_code == 2
     assert "setup takes no set" in result.output
-
-
-# --- the hosts helper and its sudoers rule -------------------------------------------------
-
-
-def test_setup_installs_the_hosts_helper_root_owned_and_executable(
-    env: Env, root: Path, bin_dir: Path
-) -> None:
-    result = setup(host(root, bin_dir))
-
-    assert result.exit_code == 0, result.output
-    helper = root / HELPER
-    assert mode(helper) == 0o755
-    assert helper.read_text().splitlines()[0] == f"#!{sys.executable} -IS"
-    assert mode(root / BUNDLE / "sandbox" / "hosts_helper.py") == 0o644
-    # Runnable as installed: the shebang's Python, no site-packages, nothing outside the bundle.
-    usage = subprocess.run([helper, "--help"], capture_output=True, text=True, check=False)
-    assert usage.returncode == 0, usage.stderr
-    assert "sandbox-hosts" in usage.stdout
-
-
-def run_bundle(
-    python: str, root: Path, hosts: Path, *argv: str
-) -> subprocess.CompletedProcess[str]:
-    """Run the installed bundle's helper on ``hosts`` (the installed one only edits /etc/hosts)."""
-    code = (
-        "import sys\n"
-        f"sys.path.insert(0, {str(root / BUNDLE)!r})\n"
-        "from pathlib import Path\n"
-        "from sandbox.hosts_helper import run\n"
-        f"status = run({list(argv)!r}, hosts_path=Path({str(hosts)!r}),"
-        f" lock_path=Path({str(hosts) + '.lock'!r}))\n"
-        "third_party = {'pydantic', 'yaml', 'typer', 'click'} & set(sys.modules)\n"
-        "assert not third_party, third_party\n"
-        "sys.exit(status)\n"
-    )
-    return subprocess.run(
-        [python, "-I", "-S", "-c", code], capture_output=True, text=True, check=False
-    )
-
-
-def _pythons() -> list[str]:
-    """This Python, the system one the installed helper runs under (3.9 on macOS's Xcode
-    command line tools), and any python3.9 on PATH."""
-    found = [sys.executable, "/usr/bin/python3", shutil.which("python3.9")]
-    real = [p for p in found if p is not None and Path(p).is_file()]
-    return list(dict.fromkeys(real))
-
-
-@pytest.mark.parametrize("python", _pythons())
-def test_the_installed_helper_bundle_works_with_the_standard_library_only(
-    env: Env, root: Path, bin_dir: Path, tmp_path: Path, python: str
-) -> None:
-    assert setup(host(root, bin_dir)).exit_code == 0
-    hosts = tmp_path / "hosts"
-    hosts.write_text("127.0.0.1\tlocalhost\n")
-
-    written = run_bundle(
-        python, root, hosts, "write", "jira-123", "127.42.0.0/24", "mysql.jira-123.test=127.42.0.1"
-    )
-    refused = run_bundle(python, root, hosts, "write", "jira-123", "127.42.0.0/24", "a.com=1.2.3.4")
-
-    assert written.returncode == 0, written.stderr
-    assert "127.42.0.1\tmysql.jira-123.test\n" in hosts.read_text()
-    assert refused.returncode == 1
-    assert "does not end in .test" in refused.stderr
-
-
-def test_setup_scopes_a_nopasswd_sudoers_rule_to_the_helper_only(
-    env: Env, root: Path, bin_dir: Path
-) -> None:
-    runner = FakeRunner()
-
-    result = setup(host(root, bin_dir, runner=runner))
-
-    assert result.exit_code == 0, result.output
-    sudoers = root / SUDOERS
-    rules = [line for line in sudoers.read_text().splitlines() if not line.startswith("#")]
-    assert rules == ["dev ALL=(root) NOPASSWD: /usr/local/bin/sandbox-hosts"]
-    assert mode(sudoers) == 0o440
-    (visudo,) = runner.ran("visudo")
-    assert visudo[:2] == ["visudo", "-cf"]
-
-
-def test_a_sudoers_rule_visudo_rejects_is_not_installed(
-    env: Env, root: Path, bin_dir: Path
-) -> None:
-    runner = FakeRunner()
-    runner.answer(["visudo"], 1, "parse error")
-
-    result = setup(host(root, bin_dir, runner=runner))
-
-    assert result.exit_code == 1
-    assert "parse error" in result.output
-    assert list((root / SUDOERS).parent.iterdir()) == []
-
-
-def test_rerunning_setup_replaces_the_installation(env: Env, root: Path, bin_dir: Path) -> None:
-    assert setup(host(root, bin_dir)).exit_code == 0
-    stale = root / BUNDLE / "sandbox" / "stale.py"
-    stale.write_text("")
-
-    result = setup(host(root, bin_dir))
-
-    assert result.exit_code == 0, result.output
-    assert not stale.exists()
 
 
 # --- the mkcert CA -------------------------------------------------------------------------
@@ -246,84 +138,71 @@ def test_a_failing_mkcert_install_fails_setup(env: Env, root: Path, bin_dir: Pat
     assert "ERROR: no trust store" in result.output
 
 
-# --- the IP range ----------------------------------------------------------------------------
+# --- nothing of the loopback model is installed ----------------------------------------------
 
 
-def test_on_linux_setup_performs_no_loopback_setup(env: Env, root: Path, bin_dir: Path) -> None:
+def test_setup_has_no_sets_option(env: Env, root: Path, bin_dir: Path) -> None:
     runner = FakeRunner()
 
-    result = setup(host(root, bin_dir, runner=runner))
+    result = setup(host(root, bin_dir, runner=runner), "--sets", "2")
+
+    assert result.exit_code == 2
+    assert "No such option: --sets" in result.output
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_setup_installs_no_helper_no_sudoers_rule_and_no_alias_job(
+    env: Env, root: Path, bin_dir: Path, platform: str
+) -> None:
+    runner = FakeRunner()
+
+    result = setup(host(root, bin_dir, platform=platform, runner=runner))
 
     assert result.exit_code == 0, result.output
-    assert not (root / PLIST).exists()
-    assert runner.ran("ifconfig") == []
-    assert runner.ran("launchctl") == []
-    assert "no loopback setup needed on Linux" in result.output
-
-
-def test_setup_refuses_when_an_interface_has_an_address_in_the_ip_range(
-    env: Env, root: Path, bin_dir: Path
-) -> None:
-    runner = FakeRunner()
-    runner.answer(
-        ["ip", "-4", "-o", "addr", "show"],
-        0,
-        "1: lo    inet 127.0.0.1/8 scope host lo\n1: lo    inet 127.42.3.7/32 scope host lo\n",
-    )
-
-    result = setup(host(root, bin_dir, runner=runner))
-
-    assert result.exit_code == 1
-    assert "127.42.0.0/16 is already in use" in result.output
-    assert "127.42.3.7 (lo)" in result.output
     assert_nothing_installed(root)
-    assert runner.ran("sudo") == []
+    for program in ("visudo", "ifconfig", "ip", "launchctl", "/bin/sh"):
+        assert runner.ran(program) == [], program
+    assert (root / HOSTS).read_text() == OWN_HOSTS
 
 
-def test_setup_refuses_when_the_hosts_file_maps_a_name_into_the_ip_range(
-    env: Env, root: Path, bin_dir: Path
-) -> None:
-    (root / "etc" / "hosts").write_text(
-        "127.0.0.1\tlocalhost\n127.42.0.9 db.local\n"
-        "# sandbox:jira-123\n127.42.0.1\tmysql.jira-123.test\n# end sandbox:jira-123\n"
+# --- what an upgraded machine still carries --------------------------------------------------
+
+BLOCKS = (
+    "# sandbox:jira-123\n127.42.0.1\tmysql.jira-123.test\n127.42.0.2\tweb.jira-123.test\n"
+    "# end sandbox:jira-123\n",
+    "# sandbox:other\n127.42.1.1\tmysql.other.test\n# end sandbox:other\n",
+)
+
+
+def old_alias_job(*prefixes: str) -> bytes:
+    """The launchd job as the loopback model wrote it, aliasing each ``a.b.c`` /24."""
+    script = (
+        f"for p in {' '.join(prefixes)} ; do h=1; while [ $h -le 254 ]; do "
+        '/sbin/ifconfig lo0 alias "$p.$h" up; h=$((h + 1)); done; done'
+    )
+    return plistlib.dumps(
+        {"Label": LABEL, "ProgramArguments": ["/bin/sh", "-c", script], "RunAtLoad": True}
     )
 
-    result = setup(host(root, bin_dir))
 
-    assert result.exit_code == 1
-    assert "127.42.0.9 (/etc/hosts: db.local)" in result.output
-    assert "mysql.jira-123.test" not in result.output  # sandbox's own blocks are fine
-    assert_nothing_installed(root)
-
-
-def test_setup_uses_the_invoking_users_config(env: Env, root: Path, bin_dir: Path) -> None:
-    config = root / "home" / "dev" / ".config" / "sandbox" / "config.yaml"
-    config.parent.mkdir(parents=True)
-    config.write_text("ip_pool: 127.50.0.0/16\n")
-    runner = FakeRunner()
-    runner.answer(
-        ["ip", "-4", "-o", "addr", "show"], 0, "1: lo    inet 127.42.3.7/32 scope host lo"
+def leave_loopback_installation(root: Path, *, alias_job: bytes | None = None) -> None:
+    helper = root / HELPER
+    helper.parent.mkdir(parents=True)
+    helper.write_text("#!/usr/bin/python3 -IS\n")
+    helper.chmod(0o755)
+    package = root / BUNDLE / "sandbox"
+    package.mkdir(parents=True)
+    (package / "hosts_helper.py").write_text("")
+    sudoers = root / SUDOERS
+    sudoers.parent.mkdir(parents=True)
+    sudoers.write_text("dev ALL=(root) NOPASSWD: /usr/local/bin/sandbox-hosts\n")
+    (root / HOSTS).write_text(
+        "127.0.0.1\tlocalhost\n" + BLOCKS[0] + "::1 ip6-localhost\n" + BLOCKS[1]
     )
-
-    result = setup(host(root, bin_dir, runner=runner))
-
-    assert result.exit_code == 0, result.output  # 127.42.3.7 is outside 127.50.0.0/16
-
-
-# --- the macOS loopback alias pool ---------------------------------------------------------
-
-
-def macos(root: Path, bin_dir: Path, lo0: str = "") -> tuple[Host, FakeRunner]:
-    runner = FakeRunner()
-    runner.answer(["ifconfig", "lo0"], 0, lo0 or lo0_with_aliases())
-    runner.answer(["ifconfig", "-a"], 0, lo0 or lo0_with_aliases())
-    return host(root, bin_dir, platform="darwin", runner=runner), runner
-
-
-def alias_script(root: Path) -> str:
-    program = plist(root)["ProgramArguments"]
-    assert program[:2] == ["/bin/sh", "-c"]
-    return program[2]
+    if alias_job is not None:
+        (root / PLIST).parent.mkdir(parents=True)
+        (root / PLIST).write_bytes(alias_job)
 
 
 def run_alias_script(script: str, tmp_path: Path) -> list[str]:
@@ -336,108 +215,158 @@ def run_alias_script(script: str, tmp_path: Path) -> list[str]:
     return log.read_text().splitlines() if log.exists() else []
 
 
-def test_on_macos_setup_installs_a_launchd_job_aliasing_16_blocks_at_boot(
-    env: Env, root: Path, bin_dir: Path
-) -> None:
-    h, runner = macos(root, bin_dir)
+DIRECTIONS = pytest.mark.parametrize("args", [(), ("--uninstall",)], ids=["setup", "uninstall"])
 
-    result = setup(h)
+
+@DIRECTIONS
+def test_the_hosts_helper_its_bundle_and_its_sudoers_rule_are_removed(
+    env: Env, root: Path, bin_dir: Path, args: tuple[str, ...]
+) -> None:
+    leave_loopback_installation(root)
+
+    result = setup(host(root, bin_dir), *args)
 
     assert result.exit_code == 0, result.output
-    job = plist(root)
-    assert job["Label"] == LABEL
-    assert job["RunAtLoad"] is True
-    assert mode(root / PLIST) == 0o644
-    script = alias_script(root)
-    assert "127.42.0 " in script
-    assert "127.42.15" in script
-    assert "127.42.16" not in script
-    # The pool is live now, not only after the next boot.
-    assert ["/bin/sh", "-c", script] in runner.calls
-    assert "16 /24 blocks (127.42.0.0/24 to 127.42.15.0/24)" in result.output
+    assert_nothing_installed(root)
+    for path in ("/usr/local/bin/sandbox-hosts", "/usr/local/lib/sandbox-hosts/",
+                 "/etc/sudoers.d/sandbox-hosts"):  # fmt: skip
+        assert f"removed {path} " in result.output, path
 
 
-def test_the_launchd_script_aliases_every_host_address_of_each_block(
-    env: Env, root: Path, bin_dir: Path, tmp_path: Path
+@DIRECTIONS
+def test_leftover_hosts_blocks_are_removed_and_every_other_line_is_kept(
+    env: Env, root: Path, bin_dir: Path, args: tuple[str, ...]
 ) -> None:
-    h, _ = macos(root, bin_dir)
-    assert setup(h, "--sets", "2").exit_code == 0
+    leave_loopback_installation(root)
+    (root / HOSTS).chmod(0o644)
 
-    calls = run_alias_script(alias_script(root), tmp_path)
-
-    assert len(calls) == 2 * 254
-    assert calls[0] == "lo0 alias 127.42.0.1 up"
-    assert calls[253] == "lo0 alias 127.42.0.254 up"
-    assert calls[-1] == "lo0 alias 127.42.1.254 up"
-
-
-def test_rerunning_setup_with_fewer_sets_drops_the_extra_aliases(
-    env: Env, root: Path, bin_dir: Path, tmp_path: Path
-) -> None:
-    lo0 = lo0_with_aliases("127.42.0.0/24", "127.42.1.0/24", "127.42.2.0/24")
-    h, runner = macos(root, bin_dir, lo0)
-    (root / PLIST).parent.mkdir(parents=True)
-    (root / PLIST).write_bytes(b"")  # an earlier setup's job: its aliases are not "in use"
-
-    result = setup(h, "--sets", "1")
+    result = setup(host(root, bin_dir), *args)
 
     assert result.exit_code == 0, result.output
-    removals = [call[2] for call in runner.ran("/bin/sh", "-c") if "-alias" in call[2]]
-    assert len(removals) == 1
-    calls = run_alias_script(removals[0], tmp_path)
-    assert len(calls) == 2 * 254
-    assert calls[0] == "lo0 -alias 127.42.1.1"
+    assert (root / HOSTS).read_text() == OWN_HOSTS
+    assert mode(root / HOSTS) == 0o644
+    assert "removed 2 `# sandbox:` blocks from /etc/hosts" in result.output
 
 
-def test_on_macos_setup_refuses_addresses_in_the_range_it_did_not_alias(
-    env: Env, root: Path, bin_dir: Path
+@DIRECTIONS
+def test_a_hosts_block_without_its_end_line_is_left_for_the_developer(
+    env: Env, root: Path, bin_dir: Path, args: tuple[str, ...]
 ) -> None:
-    h, _ = macos(root, bin_dir, lo0_with_aliases("127.42.0.0/24"))
+    """Everything after an unterminated block could be the developer's own lines."""
+    broken = "# sandbox:broken\n127.42.2.1\tmysql.broken.test\n10.0.0.5\tnas.home\n"
+    (root / HOSTS).write_text(OWN_HOSTS + BLOCKS[1] + broken)
 
-    result = setup(h)
+    result = setup(host(root, bin_dir), *args)
 
-    assert result.exit_code == 1
-    assert "127.42.0.1/24" not in result.output
-    assert "127.42.0.1 (lo0)" in result.output
-    assert_nothing_installed(root)
+    assert result.exit_code == 0, result.output
+    assert (root / HOSTS).read_text() == OWN_HOSTS + broken
+    assert "removed 1 `# sandbox:` block from /etc/hosts" in result.output
+    assert "`# sandbox:broken` in /etc/hosts has no `# end sandbox:broken` line" in result.output
 
 
-@pytest.mark.parametrize(("sets", "message"), [("0", "at least 1"), ("257", "at most 256")])
-def test_sets_must_fit_the_ip_pool(
-    env: Env, root: Path, bin_dir: Path, sets: str, message: str
+@DIRECTIONS
+def test_on_macos_the_alias_job_and_its_aliases_are_removed(
+    env: Env, root: Path, bin_dir: Path, tmp_path: Path, args: tuple[str, ...]
 ) -> None:
-    h, _ = macos(root, bin_dir)
+    leave_loopback_installation(root, alias_job=old_alias_job("127.42.0", "127.42.1"))
+    runner = FakeRunner()
 
-    result = setup(h, "--sets", sets)
-
-    assert result.exit_code != 0
-    assert message in result.output
-    assert_nothing_installed(root)
-
-
-# --- uninstall -----------------------------------------------------------------------------
-
-
-def test_uninstall_removes_helper_sudoers_and_launchd_job_but_keeps_the_ca(
-    env: Env, root: Path, bin_dir: Path, tmp_path: Path
-) -> None:
-    h, runner = macos(root, bin_dir)
-    assert setup(h).exit_code == 0
-    runner.calls.clear()
-    runner.answer(["ifconfig", "lo0"], 0, lo0_with_aliases("127.42.0.0/24"))
-
-    result = setup(h, "--uninstall")
+    result = setup(host(root, bin_dir, platform="darwin", runner=runner), *args)
 
     assert result.exit_code == 0, result.output
     assert_nothing_installed(root)
     assert ["launchctl", "bootout", f"system/{LABEL}"] in runner.calls
     (removal,) = runner.ran("/bin/sh", "-c")
-    assert run_alias_script(removal[2], tmp_path)[0] == "lo0 -alias 127.42.0.1"
-    assert not [call for call in runner.calls if any("mkcert" in arg for arg in call)]
-    assert "mkcert -uninstall" in result.output
+    calls = run_alias_script(removal[2], tmp_path)
+    assert len(calls) == 2 * 254
+    assert calls[0] == "lo0 -alias 127.42.0.1"
+    assert calls[-1] == "lo0 -alias 127.42.1.254"
+    assert "removed /Library/LaunchDaemons/sandbox.loopback-aliases.plist " in result.output
+    assert "removed the lo0 aliases of 2 /24 blocks" in result.output
 
 
-def test_uninstall_on_linux_needs_no_loopback_teardown(env: Env, root: Path, bin_dir: Path) -> None:
+@pytest.mark.parametrize(
+    "job",
+    [
+        pytest.param(b"", id="empty"),
+        pytest.param(b"not a plist", id="not-a-plist"),
+        pytest.param(plistlib.dumps({"Label": LABEL}), id="no-program"),
+        pytest.param(
+            plistlib.dumps({"Label": LABEL, "ProgramArguments": ["/bin/sh", "-c", "echo hi"]}),
+            id="another-script",
+        ),
+        # Not loopback /24s: never handed to a root shell.
+        pytest.param(old_alias_job("10.0.0", "127.42.0"), id="not-loopback"),
+        pytest.param(old_alias_job("127.42.0;reboot"), id="shell-separator"),
+        pytest.param(old_alias_job("$(reboot)"), id="shell-substitution"),
+        pytest.param(
+            old_alias_job("127.42.0", "127.42.1").replace(b"127.42.1", b"127.42.999"),
+            id="not-an-address",
+        ),
+    ],
+)
+def test_an_alias_job_setup_cannot_read_is_removed_without_running_anything_from_it(
+    env: Env, root: Path, bin_dir: Path, job: bytes
+) -> None:
+    leave_loopback_installation(root, alias_job=job)
+    runner = FakeRunner()
+
+    result = setup(host(root, bin_dir, platform="darwin", runner=runner))
+
+    assert result.exit_code == 0, result.output
+    assert_nothing_installed(root)
+    assert ["launchctl", "bootout", f"system/{LABEL}"] in runner.calls
+    assert runner.ran("/bin/sh") == []
+    assert "restart" in result.output
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+@DIRECTIONS
+def test_a_machine_with_nothing_left_over_is_not_touched(
+    env: Env, root: Path, bin_dir: Path, platform: str, args: tuple[str, ...]
+) -> None:
+    runner = FakeRunner()
+    before = (root / HOSTS).stat().st_mtime_ns
+
+    result = setup(host(root, bin_dir, platform=platform, runner=runner), *args)
+
+    assert result.exit_code == 0, result.output
+    assert (root / HOSTS).read_text() == OWN_HOSTS
+    assert (root / HOSTS).stat().st_mtime_ns == before
+    assert runner.ran("launchctl") == []
+    assert runner.ran("/bin/sh") == []
+    assert "sandbox-hosts" not in result.output
+    assert "/etc/hosts" not in result.output
+
+
+def test_a_machine_without_a_hosts_file_is_fine(env: Env, root: Path, bin_dir: Path) -> None:
+    (root / HOSTS).unlink()
+
+    result = setup(host(root, bin_dir))
+
+    assert result.exit_code == 0, result.output
+    assert not (root / HOSTS).exists()
+
+
+def test_a_failed_setup_removes_nothing(env: Env, root: Path, tmp_path: Path) -> None:
+    """No mkcert: setup refuses before it changes the machine in either direction."""
+    leave_loopback_installation(root)
+    before = (root / HOSTS).read_text()
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    result = setup(host(root, empty))
+
+    assert result.exit_code == 1
+    assert (root / HELPER).exists()
+    assert (root / SUDOERS).exists()
+    assert (root / HOSTS).read_text() == before
+
+
+# --- uninstall -----------------------------------------------------------------------------
+
+
+def test_uninstall_keeps_the_ca(env: Env, root: Path, bin_dir: Path) -> None:
     runner = FakeRunner()
     assert setup(host(root, bin_dir, runner=runner)).exit_code == 0
     runner.calls.clear()
@@ -445,7 +374,6 @@ def test_uninstall_on_linux_needs_no_loopback_teardown(env: Env, root: Path, bin
     result = setup(host(root, bin_dir, runner=runner), "--uninstall")
 
     assert result.exit_code == 0, result.output
-    assert_nothing_installed(root)
     assert [call for call in runner.calls if call[0] != "systemctl"] == []
     assert "mkcert -uninstall" in result.output
 
@@ -456,8 +384,15 @@ def test_uninstall_when_nothing_is_installed_succeeds(env: Env, root: Path, bin_
     assert result.exit_code == 0, result.output
 
 
-def test_the_helper_bundles_constants_mirror_sandboxs_own() -> None:
-    from sandbox import config, hosts_block, leases
+def test_uninstall_does_not_need_a_valid_config(env: Env, root: Path, bin_dir: Path) -> None:
+    """A config still carrying a key of the loopback model must not block the clean-up."""
+    leave_loopback_installation(root, alias_job=old_alias_job("127.50.0"))
+    config = root / "home" / "dev" / ".config" / "sandbox" / "config.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("ip_pool: 127.50.0.0/16\n")
+    env.config_file.write_text("ip_pool: 127.50.0.0/16\n")
 
-    assert hosts_block.LOOPBACK == config.LOOPBACK
-    assert hosts_block.BLOCK_PREFIX == leases.BLOCK_PREFIX
+    result = setup(host(root, bin_dir, platform="darwin"), "--uninstall")
+
+    assert result.exit_code == 0, result.output
+    assert_nothing_installed(root)
