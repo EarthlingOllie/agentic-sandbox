@@ -66,3 +66,9 @@ _Avoid_: Proxy, DNS server, gateway
 
 **Supported host**:
 A machine from which containers are reachable at their own addresses: Linux, or macOS with OrbStack.
+
+### Verification
+
+**Walkthrough harness**:
+The opt-in run that drives the installed `sandbox` through every verb on a real machine, connects to every address each set reports, and ends with a report.
+_Avoid_: E2E suite, lifecycle test, smoke test

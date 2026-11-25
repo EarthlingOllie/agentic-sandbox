@@ -47,6 +47,8 @@ jobs:
       - run: uv sync --locked
       - run: docker compose version
       # Pulled up front so a slow registry shows up here, not as a healthcheck timeout.
+      # ubuntu:24.04 is the base of the agent and resolver images, which the tests build.
+      - run: docker pull ubuntu:24.04
       - run: docker pull mysql:8.4
       - run: docker pull python:3.12-alpine
       # Web app tests issue certificates from a throwaway CA ($CAROOT in a temp dir).

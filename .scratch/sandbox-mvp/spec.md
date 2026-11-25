@@ -3,6 +3,14 @@
 Source: "Multi-repo agent environment provisioner: concept" (claude.ai artifact C9wKnYAVNbtWeAbxCjbbJc), all open questions resolved.
 Labels (when published): `ready-for-agent`
 
+> **Revision (resolver addressing).** The addressing model in this spec was replaced after the MVP. Set hostnames now resolve to container addresses through a shared resolver; nothing is published on the host, and there is no loopback IP pool, no `/etc/hosts` block, no `sandbox-hosts` helper and no macOS `lo0` alias job.
+>
+> - The current model is specified in [`../resolver-addressing/spec.md`](../resolver-addressing/spec.md); the decision and its trade-offs are recorded in [ADR 0001, `docs/adr/0001-set-hostnames-resolve-to-container-addresses.md`](../../docs/adr/0001-set-hostnames-resolve-to-container-addresses.md); the vocabulary is in [`CONTEXT.md`](../../CONTEXT.md).
+> - **Superseded here:** stories 2-4, 6, 10, 13, 52-53, 56-61, and the Addressing, IpPool and HostsFile parts of the Implementation Decisions. Each is marked **[Superseded]** below and kept only as a record of what was built first.
+> - Read with that spec wherever this one still mentions IP leases, the IP pool, hosts entries, published ports or `setup --sets`: the Solution, stories 12, 69, 97, 98 and 111, the CLI surface, Lifecycle, Concurrency, Filesystem layout and Testing Decisions.
+> - New since this spec: macOS needs OrbStack (Docker Desktop for Mac is not supported), and the end-to-end suite became the walkthrough harness.
+> - Everything else in this spec (sets, plans, templates, clones and sync, shared services, init hooks, web apps, the agent, the verbs) still stands.
+
 ## Problem Statement
 
 I work across several repositories that together make up one product (e.g. an `api` and a `web` repo that both need MySQL and Redis). I want to hand a unit of work, such as ticket `jira-123`, to a coding agent, and I want to run several of these agents at once.
@@ -35,21 +43,21 @@ The user runs `sandbox jira-123 up --repos api web`, waits for healthchecks and 
 ### Setup and prerequisites
 
 1. As a developer, I want a one-time `sudo sandbox setup`, so that everything needing root is installed once and the everyday tool stays unprivileged.
-2. As a developer, I want setup to install a small root-owned `sandbox-hosts` helper with a NOPASSWD sudoers rule scoped to that binary only, so that `sandbox` can update `/etc/hosts` without a password prompt and without broad sudo rights.
-3. As a macOS developer, I want setup to install a launchd job that creates a pool of `lo0` loopback aliases at boot, so that sets can bind to IPs other than 127.0.0.1.
-4. As a macOS developer, I want to size that alias pool with `--sets N` (default 16 /24 blocks), so that I can run as many concurrent sets as I need.
+2. **[Superseded]** As a developer, I want setup to install a small root-owned `sandbox-hosts` helper with a NOPASSWD sudoers rule scoped to that binary only, so that `sandbox` can update `/etc/hosts` without a password prompt and without broad sudo rights.
+3. **[Superseded]** As a macOS developer, I want setup to install a launchd job that creates a pool of `lo0` loopback aliases at boot, so that sets can bind to IPs other than 127.0.0.1.
+4. **[Superseded]** As a macOS developer, I want to size that alias pool with `--sets N` (default 16 /24 blocks), so that I can run as many concurrent sets as I need.
 5. As a developer, I want setup to run `mkcert -install` as me (from `SUDO_USER`), never as root, so that the CA lands in my normal CAROOT and my browser trusts it.
-6. As a developer, I want setup to refuse if the configured IP range is already in use, so that sandbox never hijacks addresses something else relies on.
+6. **[Superseded]** As a developer, I want setup to refuse if the configured IP range is already in use, so that sandbox never hijacks addresses something else relies on.
 7. As a developer, I want `sudo sandbox setup --uninstall` to remove the hosts helper, sudoers rule and launchd job, so that I can cleanly remove sandbox.
 8. As a developer, I want `--uninstall` to leave the mkcert CA installed and print the `mkcert -uninstall` command, so that I don't lose a CA other tools may use but know how to remove it.
 9. As a developer, I want `up` to fail early and name the missing piece if setup hasn't been run (helper missing, alias pool missing, `rootCA.pem` missing), so that I know exactly what to fix.
-10. As a Linux developer, I want no loopback setup at all, since the whole 127.0.0.0/8 range already works.
+10. **[Superseded]** As a Linux developer, I want no loopback setup at all, since the whole 127.0.0.0/8 range already works.
 11. As a Windows developer, I want a clear "unsupported platform" error, so that I don't hit confusing locking failures.
 
 ### Configuration and plans
 
 12. As a developer, I want a global config at `~/.config/sandbox/config.yaml`, so that I can change the IP pool, the templates root, the sets root and the default agent.
-13. As a developer, I want the default IP pool to be 127.42.0.0/16, so that it avoids Debian's 127.0.1.1 and systemd-resolved's 127.0.0.53.
+13. **[Superseded]** As a developer, I want the default IP pool to be 127.42.0.0/16, so that it avoids Debian's 127.0.1.1 and systemd-resolved's 127.0.0.53.
 14. As a developer, I want each set to get its own directory `~/sandbox/sets/<set>/` with a plan file `sandbox.yaml` at its root, so that the set's definition lives beside its worktrees.
 15. As a developer, I want the set's name to be its directory name, never repeated in the plan, so that there is one source of truth.
 16. As a developer, I want the plan to list `repos.<name>.source` (absolute path) and `repos.<name>.base` (the branch the worktree is cut from), so that a set can be recreated from its plan alone.
@@ -100,16 +108,16 @@ The user runs `sandbox jira-123 up --repos api web`, waits for healthchecks and 
 
 ### Addressing and networking
 
-52. As a developer, I want each hostname in a set to get its own loopback IP from the set's /24 lease (.1–.254), so that every service keeps its native port.
-53. As a developer, I want each set to lease one /24 (e.g. `jira-123` → 127.42.3.0/24), so that up to 255 sets with 254 hostnames each fit in the default pool.
+52. **[Superseded]** As a developer, I want each hostname in a set to get its own loopback IP from the set's /24 lease (.1–.254), so that every service keeps its native port.
+53. **[Superseded]** As a developer, I want each set to lease one /24 (e.g. `jira-123` → 127.42.3.0/24), so that up to 255 sets with 254 hostnames each fit in the default pool.
 54. As a developer, I want every service reachable by its short alias (`mysql`) on the set's Docker network, so that committed app config works unchanged.
 55. As a developer, I want every service reachable at `<service>.<set>.test` from both the host and inside the set, at the same IP and port, so that tools and humans use one address everywhere.
-56. As a developer, I want ports published only on the hostname's IP (e.g. `127.42.3.5:3306:3306`), so that sets never collide.
-57. As a developer, I want a set's IP leases to be sticky across `down` and `up`, so that addresses stay stable for my tools and bookmarks.
-58. As a developer, I want `/etc/hosts` managed as one `# sandbox:<set>` block per set, written after the set is up, so that my other entries are never touched.
-59. As a security-conscious developer, I want `sandbox-hosts` to refuse any IP outside the set's own block and any name not ending in `.test`, so that the helper can't be abused to hijack real domains.
-60. As a macOS developer, I want `up` to fail clearly when all alias blocks are leased, so that I know to rerun setup with a larger `--sets`.
-61. As a developer, I want the IP lease file and `/etc/hosts` guarded by `flock`, so that concurrent `sandbox` processes never corrupt them.
+56. **[Superseded]** As a developer, I want ports published only on the hostname's IP (e.g. `127.42.3.5:3306:3306`), so that sets never collide.
+57. **[Superseded]** As a developer, I want a set's IP leases to be sticky across `down` and `up`, so that addresses stay stable for my tools and bookmarks.
+58. **[Superseded]** As a developer, I want `/etc/hosts` managed as one `# sandbox:<set>` block per set, written after the set is up, so that my other entries are never touched.
+59. **[Superseded]** As a security-conscious developer, I want `sandbox-hosts` to refuse any IP outside the set's own block and any name not ending in `.test`, so that the helper can't be abused to hijack real domains.
+60. **[Superseded]** As a macOS developer, I want `up` to fail clearly when all alias blocks are leased, so that I know to rerun setup with a larger `--sets`.
+61. **[Superseded]** As a developer, I want the IP lease file and `/etc/hosts` guarded by `flock`, so that concurrent `sandbox` processes never corrupt them.
 
 ### Web apps and TLS
 
@@ -242,9 +250,9 @@ Provisioning side:
 Host-state side (Compose can't manage these; each takes its file paths through its constructor):
 
 - **CloneManager** (was WorktreeManager): creates the agent's clone of each repo on `agent/<set>` and syncs that branch into the source repo, serialised per repo; dirty/untracked, unsynced and unpushed checks (in destroy); container-based fallback removal.
-- **IpPool**: leases one /24 per set and one IP per hostname within it, sticky until `prune`; `flock`-guarded lease file.
+- **[Superseded]** **IpPool**: leases one /24 per set and one IP per hostname within it, sticky until `prune`; `flock`-guarded lease file.
 - **CertAuthority**: wraps mkcert to issue and validate per-set `*.<set>.test` certificates; checks `rootCA.pem` exists.
-- **HostsFile**: writes and removes the `# sandbox:<set>` block, via `sudo -n sandbox-hosts` in production.
+- **[Superseded]** **HostsFile**: writes and removes the `# sandbox:<set>` block, via `sudo -n sandbox-hosts` in production.
 
 Value objects: `ServiceGraph` (merged service specs by name), `HostBinding` (hostname and loopback IP), `SetResult` (bindings or error). `status`/`urls` output models are Pydantic models shared by the table and `--json` renderers.
 
@@ -274,6 +282,8 @@ State table (the set directory is the source of truth):
 Set states reported by `status`: running, stopped, partial, orphaned. Orphans are found by reconciling set directories and lease file against Docker labels.
 
 ### Addressing
+
+**[Superseded]** by the Addressing, resolver, Setup and Configuration decisions of [`../resolver-addressing/spec.md`](../resolver-addressing/spec.md).
 
 - Pool 127.42.0.0/16 by default (`ip_pool` in config); one /24 per set; hostnames take .1–.254.
 - Two names per service: short alias on the set network, and `<name>.<set>.test` as network alias plus `/etc/hosts` entry.

@@ -11,20 +11,25 @@ plan, clones each repo for the agent, then starts the services a repo declares i
 (a repo without `compose.yaml` takes part with its clone only). Inside the set, services
 reach each other by their short names (`mysql`). `sandbox SET down` stops the containers and
 removes the set's network and volumes; the clones and the plan are kept. Repos that declare
-the same service share one instance of it (see [Shared services](#shared-services)). Once
-the services are up, `up` writes the set's hostnames into the hosts file (see
-[Hosts file](#hosts-file)); `down` removes them. How the agent's commits reach your repo
-is in [The agent's clones](#the-agents-clones).
+the same service share one instance of it (see [Shared services](#shared-services)). From
+your machine every service answers at its set hostname, `<service>.<set>.test`, on its
+conventional port, in every running set at once; nothing is published on the host (see
+[Addressing](#addressing)). How the agent's commits reach your repo is in
+[The agent's clones](#the-agents-clones).
 
 ```console
 $ cd ~/code            # holds ./api and ./web, each with a .sandbox/ directory
 $ sandbox jira-123 up --repos api web
-set jira-123: /home/me/sandbox/sets/jira-123
+set jira-123: /home/me/sandbox/sets/jira-123 (provisioned)
   plan: /home/me/sandbox/sets/jira-123/sandbox.yaml (created)
   api: /home/me/sandbox/sets/jira-123/api [agent/jira-123, created from main]
   web: /home/me/sandbox/sets/jira-123/web [agent/jira-123, created from release/2.4]
-  services: mysql healthy [sandbox-jira-123]
+  services: mysql, web healthy [sandbox-jira-123]
+  hostnames:
+    mysql.jira-123.test  3306/tcp
+    web.jira-123.test  443/tcp
   agent: running [sandbox-jira-123]; open a shell: sandbox jira-123 sh
+$ mysql -h mysql.jira-123.test -uroot -p   # from your machine, on 3306
 $ sandbox jira-123 sh --repo api   # a shell in the agent, in /workspace/jira-123/api
 $ sandbox jira-123 sh mysql        # a shell in the mysql service container
 $ sandbox jira-123 claude          # Claude Code in the agent, in /workspace/jira-123
@@ -32,6 +37,81 @@ $ sandbox jira-123 down
 set jira-123: sandbox-jira-123 stopped; clones kept in /home/me/sandbox/sets/jira-123
 $ git -C api log --oneline -1 agent/jira-123   # the agent's commits, synced by down
 ```
+
+## Addressing
+
+Every service of a set, every extra host of a web app and the set's agent has a **set
+hostname**, `<name>.<set>.<domain>`. The **domain** is `test` unless you chose another at
+setup (see [Configuration](#configuration)); this README writes hostnames with `test`.
+
+```text
+mysql.jira-123.test:3306      mysql.jira-456.test:3306      # two sets, one conventional port
+https://web.jira-123.test     https://web.jira-456.test
+agent.jira-123.test           agent.jira-456.test
+```
+
+- **A set hostname resolves to the container's own address.** A set publishes nothing on
+  the host: sandbox allocates no IPs and no ports, so every service keeps its conventional
+  port (3306 for MySQL) in every set, and the number of sets is limited only by Docker.
+- **The resolver answers the lookup.** One shared container, the resolver, belongs to no
+  set and answers lookups of set hostnames from your machine by asking Docker's own DNS. It
+  carries no traffic and there is no reverse proxy: your client asks for the name, then
+  connects straight to the container. `up` starts the resolver if it is not running and
+  attaches it to the set; `down` detaches it, so only running sets resolve. It comes back
+  with Docker after a restart of the machine (see
+  [The resolver and isolation between sets](#the-resolver-and-isolation-between-sets)).
+- **The hostname is the stable address.** A container's address changes whenever it is
+  recreated (`down` and `up`, `up --recreate`), and the name follows it within seconds (the
+  resolver caches nothing and answers with a one-second lifetime); connect to the name,
+  never to the address. Once a set is down its hostnames stop
+  resolving, and an unknown name under the domain fails at once instead of hanging.
+- **The same name works inside the set.** The agent and the services reach
+  `mysql.jira-123.test:3306` exactly as your machine does. Inside the set the short name
+  (`mysql`) works too, so committed app config needs no change.
+- **`ports:` is a declaration, not a gate.** The container ports a service declares are what
+  `sandbox SET urls` lists. Any host-side binding a repo wrote next to them
+  (`"0.0.0.0:3306:3306"`) is ignored: it neither collides between sets nor opens a port on
+  your network.
+
+### What your machine can reach
+
+Because containers are reached at their own addresses, your machine can connect to **every
+port a container listens on**, in every running set, whether or not the service declares it
+under `ports:`. That includes the agent: something the agent serves on port 3000 is at
+`agent.<set>.test:3000`. Nothing is published on the machine's own interfaces: no port of
+your machine leads into a set. Containers of one set still cannot connect to containers of
+another.
+
+### Supported hosts
+
+This needs a machine from which containers are reachable at their own addresses:
+
+- **Linux.** `sudo sandbox setup` points systemd-resolved at the resolver. On Linux without
+  systemd-resolved, setup installs nothing and prints the one line to add to your own DNS
+  server (see [Setup](#setup)).
+- **macOS with [OrbStack](https://orbstack.dev)**, with its "Allow access to container
+  domains & IPs" setting on (the default).
+
+**Docker Desktop for Mac is not supported**: its containers are not reachable at their own
+addresses, so a set hostname would lead nowhere. There, `up` refuses a set with services
+before it creates anything and names OrbStack; with OrbStack's direct container access
+switched off, it names that setting. Why this model was chosen, and what was given up for
+it, is in
+[ADR 0001](docs/adr/0001-set-hostnames-resolve-to-container-addresses.md).
+
+### Upgrading from an earlier version
+
+Earlier versions gave every set hostname a loopback address of its own and wrote the names
+to `/etc/hosts` through a root-owned helper; all of that is gone. To move over:
+
+1. Rerun `sudo sandbox setup`. Besides pointing the machine at the resolver, it removes
+   what the earlier version installed and nothing uses any more: the `sandbox-hosts` helper
+   and its rule in `/etc/sudoers.d`, the macOS launchd job with its `lo0` aliases, and any
+   `# sandbox:` blocks left in `/etc/hosts`.
+2. Remove `ip_pool` and `hosts_file` from `~/.config/sandbox/config.yaml` if you had set
+   them. They are no longer used, and sandbox refuses a config that still carries one,
+   naming the key. The `--sets` option of setup is gone too, since there is no pool to size.
+3. Bring each existing set `down` and `up` again. There is no other migration step.
 
 ## The agent's clones
 
@@ -74,7 +154,7 @@ Services are matched **by name only** (never by image): if `api` and `web` both 
 normalised on its own with `docker compose config` (so `extends`, short/long syntax and
 list/map `environment` don't cause false conflicts) and same-named services are compared:
 
-- `depends_on`, `labels`, `ports` and `x-sandbox` are ignored (sandbox rewrites ports), as are
+- `depends_on`, `labels`, `ports` and `x-sandbox` are ignored (sandbox publishes no ports), as are
   init-hook mounts under `/sandbox/init/` (see below);
 - a `healthcheck` set by only one repo is kept; two different healthchecks conflict;
 - any other difference fails `up`, before any container starts, with a diff naming both repos:
@@ -139,9 +219,10 @@ services:
 
 Sandbox then:
 
-- serves it at `https://<repo>.<set>.test`: the service's own leased IP, with port 443
-  published on that IP. The app listens on 443 itself, as non-root, because the service
-  gets `net.ipv4.ip_unprivileged_port_start=0`;
+- serves it at `https://<repo>.<set>.test`: the service's set hostname, at the container's
+  own address, with nothing published and no proxy in between, so what you see is exactly
+  what the app serves. The app listens on 443 itself, as non-root, because the service gets
+  `net.ipv4.ip_unprivileged_port_start=0`;
 - issues a per-set `*.<set>.test` certificate with mkcert into `<set dir>/tls/` and mounts
   it read-only at `/sandbox/tls/cert.pem` and `/sandbox/tls/key.pem` (the key is readable
   by any user, so the app can run as whatever user its image uses). Later `up`s reuse it
@@ -149,12 +230,13 @@ Sandbox then:
 - injects `WORKTREE` (the repo's checkout in the set, the agent's clone at `<set dir>/<repo>`) and `APP_URL`
   (`https://<repo>.<set>.test`) into the service's environment, and nothing else (plus
   `VITE_HMR_HOST` with `vite`, below);
-- routes each extra host in `hosts` (`admin` becomes `admin.<set>.test`) to the same
-  container and IP: it is a network alias of the service, gets a line in the set's hosts
-  block, and is covered by the set's wildcard certificate. That is why an extra host must
-  be a single DNS label (`admin`, not `eu.admin`);
-- with `vite: <port>`, publishes that port on the app's IP as well and sets `VITE_HMR_HOST`
-  to the app's hostname. Point Vite's HMR at it, e.g. in `vite.config.js`:
+- makes each extra host in `hosts` (`admin` becomes `admin.<set>.test`) a further set
+  hostname of the same container: it is a network alias of the service, so the resolver
+  answers it with the web app's address, and the set's wildcard certificate covers it. That
+  is why an extra host must be a single DNS label (`admin`, not `eu.admin`);
+- with `vite: <port>`, sets `VITE_HMR_HOST` to the app's hostname; the dev server is reached
+  on that port at the same hostname (`https://web.<set>.test:5173`), again with nothing
+  published. Point Vite's HMR at it, e.g. in `vite.config.js`:
   `server: { host: true, port: 5173, hmr: { host: process.env.VITE_HMR_HOST } }`;
 - mounts the mkcert CA's `rootCA.pem`, never `rootCA-key.pem`, read-only at
   `/sandbox/ca/rootCA.pem` in every container of the set. The bundled agent image trusts it
@@ -166,7 +248,9 @@ The host trusts the certificate once `sudo sandbox setup` has installed the mkce
 no `rootCA.pem` in mkcert's `CAROOT`, if a repo marks more than one service or a service not
 named after the repo, if an extra host is more than one label deep, or if a hostname is used
 twice in the set (e.g. another repo runs a service with the web app's name, or an extra
-host matches a service or another web app). Sets without a web app need neither mkcert nor the CA.
+host matches a service, the agent or another web app). Sets without a web app need neither
+mkcert nor the CA. The certificate is issued for the configured domain: a set whose
+certificate was issued for another domain gets a new one on its next `up`.
 
 ### The agent container
 
@@ -185,6 +269,9 @@ instead; an unknown name fails and points at `--repo`.
   it never runs as root.
 - **Hardening**: `cap_drop: [ALL]`, `no-new-privileges`, and the Docker socket is never
   mounted.
+- **Hostname**: the agent answers at `agent.<set>.test`, from your machine and from the
+  set's services. It declares no ports; whatever it listens on is reachable there (see
+  [What your machine can reach](#what-your-machine-can-reach)).
 - **Mounts** (read-write binds unless noted): the set directory at `/workspace/<set>/`,
   which holds the agent's clones (its `sandbox.yaml` read-only); each source repo's `.git`,
   **read-only as a whole**, at its exact host path, because the clones borrow its objects
@@ -300,71 +387,85 @@ Enforced egress restriction is out of scope for the MVP.
 ## Status
 
 `sandbox status` lists every set with its state; `sandbox SET status` shows one set's
-services (container state, health, hostname, leased IP) and the agent's clones (branch,
-plus `*` for uncommitted changes and `?` for untracked files). It first syncs the agent's
-`agent/<set>` into each repo, and notes any repo it couldn't sync (`sync` and
-`sync_detail` in `--json`). `--json` prints the same Pydantic models the tables are
-rendered from.
+services (container state, health, set hostname and, while the service runs, its
+container's current address) and the agent's clones (branch, plus `*` for uncommitted
+changes and `?` for untracked files). It first syncs the agent's `agent/<set>` into each
+repo, and notes any repo it couldn't sync (`sync` and `sync_detail` in `--json`). `--json`
+prints the same Pydantic models the tables are rendered from; the address (`ip`) is `null`
+for a service that is not running.
 
 ```console
 $ sandbox status
 SET       STATE     DETAIL
 jira-123  running
 jira-456  partial   not running: redis
-spike-01  orphaned  2 containers and an IP lease with no set directory
+spike-01  orphaned  2 containers with no set directory
 $ sandbox jira-123 status
 set jira-123: running [sandbox-jira-123]
 
-SERVICE  STATE    HEALTH   HOSTNAME             IP
-agent    running  -        -                    -
-mysql    running  healthy  mysql.jira-123.test  127.42.0.1
+SERVICE  STATE    HEALTH   HOSTNAME             ADDRESS
+agent    running  -        agent.jira-123.test  172.18.0.2
+mysql    running  healthy  mysql.jira-123.test  172.18.0.4
+web      running  healthy  web.jira-123.test    172.18.0.3
 
 REPO  BRANCH          CHANGES
 api   agent/jira-123  * uncommitted changes
 web   agent/jira-123  clean
 ```
 
+The address is read from Docker when the command runs and is shown for information: it
+changes whenever the container is recreated, and a stopped set shows its hostnames with `-`
+in its place. Connect to the hostname.
+
+States are reconciled from the set directories and the containers Docker labels
+`sandbox.set=<set>` (queried with the `docker` CLI), and nothing else: **running** (every
+service and the agent running), **stopped** (a plan, nothing running), **partial** (some
+running) and **orphaned** (containers whose set has no plan, or a set directory without
+one).
+
 ## URLs
 
-`sandbox SET urls` lists every address in a set you can reach from the host: web apps as
-`https://` URLs (extra hosts and a Vite dev server included) and backing services as
-`<service>.<set>.test:<port>`, each with its leased loopback IP. A stopped set lists the
-addresses from its sticky lease, marked as not running. `--json` prints the same Pydantic
-model the table is rendered from.
+`sandbox SET urls` lists every address of a set: web apps as `https://` URLs (extra hosts
+and a Vite dev server included), other services as `<service>.<set>.test:<port>` on each
+container port they declare (without a port if they declare none), and the agent's
+hostname. Next to each is its container's current address. A stopped set lists the same
+addresses, marked as not running and without container addresses. `--json` prints the same
+Pydantic model the table is rendered from, with `ip` set to `null` when nothing runs there.
 
 ```console
 $ sandbox jira-123 urls
 set jira-123: running
 
-WEB                                 IP
-https://web.jira-123.test           127.42.0.3
-https://admin.jira-123.test         127.42.0.3
-https://web.jira-123.test:5173      127.42.0.3
+WEB                             IP
+https://web.jira-123.test       172.18.0.3
+https://admin.jira-123.test     172.18.0.3
+https://web.jira-123.test:5173  172.18.0.3
 
-SERVICE                             IP
-mysql.jira-123.test:3306            127.42.0.1
-redis.jira-123.test:6379            127.42.0.2
+SERVICE                   IP
+mysql.jira-123.test:3306  172.18.0.4
+redis.jira-123.test:6379  172.18.0.5
+worker.jira-123.test      172.18.0.6
+
+AGENT                IP
+agent.jira-123.test  172.18.0.2
 ```
 
-States are reconciled from the set directories, the lease file and the containers Docker
-labels `sandbox.set=<set>` (queried with the `docker` CLI): **running** (every service and
-the agent running), **stopped** (a plan, nothing running), **partial** (some running) and
-**orphaned** (containers or an IP lease whose set has no plan, or a set directory without
-one).
+Every address in the list works from your machine and from inside the set. The list is
+what the services declare, not a limit on what answers (see
+[What your machine can reach](#what-your-machine-can-reach)).
 
 ## Prune
 
-`sandbox SET prune` removes a stopped set's containers, network, volumes and hosts block,
-and releases its IP lease back to the pool; the next `up` leases it a fresh block. It
-refuses while any of the set's services run (`sandbox SET down` first), or while an `up`
-of the set is in progress. The set directory, plan and the agent's clones are never touched.
+`sandbox SET prune` detaches the resolver from a stopped set and removes the set's
+containers, network and volumes. Nothing else describes where a set is, so there is nothing
+else to release. It refuses while any of the set's services run (`sandbox SET down` first),
+or while an `up` of the set is in progress. The set directory, plan and the agent's clones
+are never touched, and the resolver keeps running for the other sets.
 
 Bare `sandbox prune` does the same for every **orphaned** set `status` reports (leftovers
-of crashes). A set whose `up` is still in progress is skipped: a brand-new set holds its
-lease before its plan exists, and a first `up` that fails before writing the plan gives
-that lease back itself. Sets are pruned concurrently (at most 4 at a time) and independently: a set
-that fails is reported, keeps its lease so a rerun retries it, and the rest carry on; the
-command then exits 1.
+of crashes). A set whose `up` is still in progress is skipped. Sets are pruned concurrently
+(at most 4 at a time) and independently: a set that fails is reported, keeps its containers
+so a rerun retries it, and the rest carry on; the command then exits 1.
 
 ## Destroy
 
@@ -388,12 +489,21 @@ sync):
 Containers can leave root-owned files in a clone (a service writing to a bind mount as
 root). On Linux, `destroy` deletes those from a throwaway root container
 (`docker run --rm ubuntu:24.04 ...`, the default agent image's base), so sudo is never
-needed. On macOS Docker Desktop maps container files to the developer, so this never arises.
+needed. On macOS, OrbStack presents the files containers write in a bind mount as the
+developer's own, so this is not expected to arise there.
 
 ## The resolver and isolation between sets
 
-One shared container, the resolver (`sandbox_resolver`), answers lookups of set hostnames; it
-is attached to the network of every running set, so every set's containers can send it
+One shared container, the resolver (`sandbox_resolver`), answers lookups of set hostnames
+(see [Addressing](#addressing)). It is dnsmasq, built by Compose from a definition that
+ships with sandbox (`src/sandbox/images/resolver/`, tagged by content hash) and never
+pulled from a registry. `up` starts it when it is not running, concurrent `up`s start
+exactly one, and it restarts with Docker, which restores the set networks it was on, so
+running sets resolve again after a reboot without another command. `down`, `prune` and
+`destroy` of one set leave it running for the others; only `sudo sandbox setup --uninstall`
+removes it.
+
+It is attached to the network of every running set, so every set's containers can send it
 packets. A container that deliberately queries the resolver directly, instead of using the
 DNS Docker gives it, can therefore learn the hostnames and addresses of other sets'
 services. It still cannot connect to them: each set has its own network and Docker does
@@ -405,50 +515,63 @@ forwards a name to an upstream DNS server.
 
 ## Setup
 
-Everything that needs root is installed once, after which `sandbox` runs unprivileged:
+Everything that needs root is done once, after which `sandbox` runs unprivileged: `up` and
+`down` never use sudo.
 
 ```console
-$ sudo sandbox setup              # or: sudo "$(command -v sandbox)" setup, if sudo's PATH lacks it
+$ sudo sandbox setup              # or: sudo env "PATH=$PATH" sandbox setup, if sudo's PATH lacks it or mkcert
 sandbox setup installed:
-  hosts helper: /usr/local/bin/sandbox-hosts (root-owned), runnable by me without a password (sudoers rule /etc/sudoers.d/sandbox-hosts, this helper only)
-  loopback: no loopback setup needed on Linux (127.0.0.0/8 is local)
+  resolver: names under .test are looked up at 127.0.0.1 port 15353 (/etc/systemd/resolved.conf.d/sandbox.conf, systemd-resolved.service reloaded)
   mkcert: CA installed for me (`mkcert -install` as me)
+$ sudo sandbox setup --domain box # choose another domain; recorded in your config
 $ sudo sandbox setup --uninstall
 ```
 
-- **Hosts helper.** `sandbox-hosts` (see [Hosts file](#hosts-file)) is installed root-owned
-  at `/usr/local/bin/sandbox-hosts`. It runs under the system Python (`/usr/bin/python3`,
-  3.9 or newer) with `-I -S`, from a root-owned copy of the few standard-library-only modules
-  it needs in `/usr/local/lib/sandbox-hosts/`, so nothing you can write (a virtualenv,
-  site-packages, `PYTHONPATH`) ever runs as root. A NOPASSWD sudoers rule
-  (`/etc/sudoers.d/sandbox-hosts`, checked with `visudo -c` first) lets you, and only you,
-  run exactly that file.
-- **macOS loopback pool.** On macOS only 127.0.0.1 itself answers on `lo0`, so setup
-  installs a launchd job (`/Library/LaunchDaemons/sandbox.loopback-aliases.plist`) that
-  adds an `lo0` alias for every address of the first `--sets N` /24 blocks of `ip_pool` at
-  boot (default 16, so 16 sets can run at once), and adds them right away too. Rerunning setup resizes the pool. On
-  Linux no loopback setup is performed: the whole of 127.0.0.0/8 already works.
+- **Resolver configuration.** Setup tells the operating system to send lookups of names
+  under the domain, and only those, to the resolver at `127.0.0.1` port `15353`, so set
+  hostnames resolve in every program:
+  - on **macOS**, the per-domain resolver file `/etc/resolver/<domain>`;
+  - on **Linux with systemd-resolved**, the drop-in
+    `/etc/systemd/resolved.conf.d/sandbox.conf` (`DNS=127.0.0.1:15353`, `Domains=~<domain>`;
+    systemd 246 or newer), followed by a reload of systemd-resolved;
+  - on **Linux without systemd-resolved**, setup refuses before installing anything and
+    prints the line to add to your own DNS server, for dnsmasq
+    `server=/test/127.0.0.1#15353`. `up` cannot check such a machine: it warns and carries on.
+- **The domain.** `--domain X` chooses the DNS suffix of set hostnames and writes
+  `domain: X` into your config (`~/.config/sandbox/config.yaml`), as you, leaving the
+  file's other keys alone. Without it setup uses the configured domain, `test` by default.
+  Rerunning setup with another `--domain` switches over: the previous domain's
+  configuration is removed. `local` is refused, because mDNS answers those names.
 - **mkcert CA.** `mkcert -install` runs as you (`SUDO_USER`), never as root, so the CA lands
-  in your own CAROOT and your browser trusts it. mkcert must be on sudo's `PATH`.
-- Setup reads **your** config (`~/.config/sandbox/config.yaml`) and refuses, before
-  installing anything, if any address in `ip_pool` is already in use: assigned to a network
-  interface, or mapped by a hosts-file line outside sandbox's own blocks.
-- `--uninstall` removes the helper, its sudoers rule and the launchd job (and the aliases),
-  but leaves the mkcert CA, which other tools may use; it prints `mkcert -uninstall` for you
-  to run yourself if you want it gone.
+  in your own CAROOT and your browser trusts set certificates. mkcert must be on sudo's
+  `PATH`.
+- **Nothing is started.** Setup starts no containers; the resolver itself is started by the
+  first `up`.
+- **Leftovers of an earlier version are removed**: the `sandbox-hosts` helper and its rule
+  in `/etc/sudoers.d`, the macOS launchd job with its `lo0` aliases, and `# sandbox:` blocks
+  in `/etc/hosts` (see [Upgrading from an earlier version](#upgrading-from-an-earlier-version)).
+- `--uninstall` removes the resolver configuration (of whichever domain was installed) and
+  the resolver container, and the same leftovers. It leaves the mkcert CA, which other tools
+  may use, and prints `mkcert -uninstall` for you to run yourself if you want it gone.
 
-`up` checks all of this before it creates anything (even before leasing IPs), and names
-what is missing: the hosts helper or its sudoers rule (when `hosts_file` is unset), on macOS
-the alias pool, and for a set with a web app the mkcert `rootCA.pem`. Sets without services
-need none of it. On macOS a set only leases blocks that are aliased; when every one is
-taken, `up` fails and suggests rerunning setup with a larger `--sets`.
+`up` checks, before it creates anything, that the machine can reach the set, and names what
+is wrong together with its fix: no resolver configuration (run `sudo sandbox setup`), a
+configuration for a domain other than the configured one (rerun setup with `--domain`), on
+macOS a Docker runtime that is not OrbStack or an OrbStack with direct container access
+off, and for a set with a web app a missing mkcert `rootCA.pem`. Sets without services need
+none of it.
 
-The macOS launchd/`lo0` path is unit-tested against a fake host (the generated plist and
-its alias script are run with a stand-in `ifconfig`), but only a person on a Mac with sudo
-can verify it for real: run `sudo sandbox setup --sets 2`, check `ifconfig lo0` lists
-127.42.0.1-127.42.1.254, reboot and check again, run `up` for a set with services, then
-`sudo sandbox setup --uninstall` and check the aliases and the plist are gone. The full list is
-the [macOS release checklist](docs/release-checklist-macos.md).
+```console
+$ sandbox jira-123 up --repos api web
+error: this machine cannot reach the set:
+  it does not send names under `test` to sandbox's resolver (there is no per-domain resolver configuration); run `sudo sandbox setup`
+```
+
+The Linux path is exercised for real by the walkthrough harness (see
+[Development](#development)). The macOS path (`/etc/resolver`, OrbStack detection) is
+unit-tested against a fake host; a person verifies it before each release by running the
+same harness on a Mac with OrbStack and working through the
+[macOS release checklist](docs/release-checklist-macos.md).
 
 ## Configuration
 
@@ -456,12 +579,10 @@ the [macOS release checklist](docs/release-checklist-macos.md).
 optional; unknown keys and bad values fail with field-level errors.
 
 ```yaml
-domain: test                      # set hostnames are <name>.<set>.<domain>
-ip_pool: 127.42.0.0/16            # loopback range; each set leases one /24
+domain: test                      # set hostnames are <name>.<set>.<domain>; set by `setup --domain`
 templates_root: ~/.config/sandbox/plans
 sets_root: ~/sandbox/sets
 state_dir: ~/.local/state/sandbox # lock files and other cross-process host state
-hosts_file: null                  # unset: /etc/hosts via `sudo -n sandbox-hosts` (see Hosts file)
 agent: null                       # default agent override (see Agent overrides)
 ```
 
@@ -473,27 +594,14 @@ issued for another domain gets a new one on its next `up`). It is one or more la
 lowercase letters, digits and inner hyphens; `local` and anything under it are refused,
 because mDNS answers those names.
 
-## Hosts file
+The operating system must send that domain to the resolver, which is what
+`sudo sandbox setup --domain X` arranges, writing the key here as it does. Change the domain
+through setup rather than by editing this file: `up` compares the two and refuses, naming
+the command to rerun, when the configured domain is not the one setup installed. Pick a
+domain no other tool on your machine claims; `test` is a top-level name reserved for
+testing, so no public site answers under it.
 
-After a set's services are up, `up` writes one block per set to `/etc/hosts`, holding
-exactly that set's hostnames and their leased IPs. Nothing outside a set's own block is
-touched; `down` (and a rolled-back `up`) removes the block.
-
-```text
-# sandbox:jira-123
-127.42.0.1	mysql.jira-123.test
-127.42.0.2	redis.jira-123.test
-# end sandbox:jira-123
-```
-
-`sandbox` writes it non-interactively through `sudo -n /usr/local/bin/sandbox-hosts`, a small
-helper that `sudo sandbox setup` installs root-owned (see [Setup](#setup)), with a NOPASSWD sudoers rule scoped to it. The
-helper only ever edits `/etc/hosts`, rewrites only the named set's block under an
-exclusive `flock` (so concurrent sets never corrupt the file), and refuses any IP outside
-the set's own /24 and any name that is not a `<label>.<set>.<domain>` hostname (`test`, or
-the configured `domain`, which `sandbox` passes as `--domain`), so it can only ever point a
-name under a set's own label at loopback. Setting `hosts_file` to a path makes `sandbox` write that
-file directly instead, without sudo; the tests use this with a temp file.
+## Plans
 
 A set's plan lives at `<sets_root>/<set>/sandbox.yaml`. The set's name is its directory
 name and never appears in the plan. `up` never overwrites a plan and refuses a `--repos`
@@ -538,7 +646,10 @@ $ uv run pytest -m integration         # integration: real git + Docker Compose 
 $ SANDBOX_E2E=1 uv run pytest -m e2e   # walkthrough harness: sudo setup, every verb (changes the machine)
 ```
 
-CI (`.github/workflows/ci.yml`) enforces all of the above except the end-to-end suite.
+CI (`.github/workflows/ci.yml`) runs all of the above except the walkthrough harness on
+every push: lint and types, the unit tests on Linux and macOS (no Docker, no root), and the
+integration tests on Linux, where a real resolver answers for real sets (asked directly, on
+its loopback port, so no setup is needed).
 
 The **walkthrough harness** (`tests/e2e/`) drives the installed `sandbox` CLI as a user
 would, on a real machine, through every verb: `sudo sandbox setup`, `up --repos`, `save`
@@ -575,8 +686,10 @@ $ SANDBOX_E2E=1 SANDBOX_E2E_KEEP_SETUP=1 uv run pytest -m e2e tests/e2e  # keep 
 ```
 
 Its workflow (`.github/workflows/e2e.yml`) runs it on a GitHub-hosted Ubuntu runner nightly,
-on demand and for `v*` tags, not on every push. Before each release a person also works
-through the [macOS release checklist](docs/release-checklist-macos.md).
+on demand and for `v*` tags, not on every push, and puts the report on the run's summary
+page. Before each release a person runs the same harness on a Mac with OrbStack; the
+[macOS release checklist](docs/release-checklist-macos.md) says how, and lists the few
+things no command can check.
 
 ### Conventions
 

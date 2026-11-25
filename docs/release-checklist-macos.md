@@ -1,77 +1,96 @@
 # macOS release checklist
 
-Run by a person on a Mac with sudo before each release. CI covers Linux end to end
-(`.github/workflows/e2e.yml`, `tests/e2e/`), but the macOS-only paths (the launchd job that
-aliases the loopback pool on `lo0`, Docker Desktop's file ownership, the login keychain and
-the browsers trusting the mkcert CA) can only be checked on a real Mac.
+Run by a person on a Mac with OrbStack before each release. CI runs the walkthrough harness
+on Linux (`.github/workflows/e2e.yml`); there is no macOS runner with OrbStack, so on a Mac
+the same harness is run by hand. It drives the installed `sandbox` through every verb and
+connects to every address every set reports (see "Development" in the README), so this list
+holds only what that one command cannot check: the two commands that need your password, a
+restart, the browsers, the refusals that need a different Docker runtime, and a Claude
+login.
 
-Copy this list into the release issue and tick each item. Record the macOS version, chip
-(Apple silicon or Intel), Docker Desktop version and the commit under test.
+Copy this list into the release issue and tick each item. Record the macOS version, the
+chip (Apple silicon or Intel), the OrbStack version (`orbctl version`) and the commit under
+test.
 
 ## Before you start
 
-- [ ] Docker Desktop is running; `docker compose version` reports 2.24 or newer.
-- [ ] `mkcert` is installed (`brew install mkcert`), and so are `git` and `curl`.
-- [ ] `sandbox` is installed from the release commit (`uv tool install .` from a checkout).
-- [ ] No earlier install is left over: `ls /usr/local/bin/sandbox-hosts
-      /Library/LaunchDaemons/sandbox.loopback-aliases.plist` lists nothing, and
-      `ifconfig lo0` shows only `127.0.0.1` in `127.42.0.0/16`.
-- [ ] A scratch directory holds three repos copied from `tests/fixtures/`, each committed on
-      `main`: `api` (from `shared-mysql-a`), `jobs` (from `shared-mysql-b`, which has the
-      init hook) and `web` (from `web-repo`, with the extra host `admin`). This is the
-      fixture set the Linux suite uses.
+- [ ] OrbStack is the running Docker runtime: `docker info --format '{{.OperatingSystem}}'`
+      prints `OrbStack`, and `docker compose version` reports 2.24 or newer.
+- [ ] In OrbStack's settings, under Network, "Allow access to container domains & IPs" is
+      on (`orbctl config show` does not say `network_bridge: false`).
+- [ ] `mkcert`, `git`, `curl` and `uv` are installed (`brew install mkcert uv`).
+- [ ] The release commit is checked out and `uv sync --locked` has run in it. The commands
+      below use that checkout's `.venv/bin/sandbox`.
 
-## Setup
+## Setup (needs your password)
 
-- [ ] `sudo sandbox setup --sets 2` succeeds and prints the helper, the loopback line
-      (`lo0 aliases for 2 /24 blocks`) and the mkcert line.
-- [ ] `ifconfig lo0 | grep -c 'inet 127.42.'` prints `508` (127.42.0.1 to 127.42.1.254).
-- [ ] `/Library/LaunchDaemons/sandbox.loopback-aliases.plist` exists, owned by root.
-- [ ] `sudo -n -l /usr/local/bin/sandbox-hosts` succeeds without a password prompt.
-- [ ] The mkcert CA is in the login keychain (Keychain Access, "mkcert development CA")
-      and `mkcert -CAROOT` points into your own home, not root's.
-- [ ] Reboot. After logging in, `ifconfig lo0 | grep -c 'inet 127.42.'` still prints `508`.
+- [ ] `sudo env "PATH=$PATH" .venv/bin/sandbox setup` succeeds and prints a `resolver:` line
+      naming `/etc/resolver/test` and a `mkcert:` line naming you, not root.
+- [ ] `cat /etc/resolver/test` prints `nameserver 127.0.0.1` and `port 15353`, and
+      `scutil --dns` lists a resolver for the domain `test` with that port.
+- [ ] `mkcert -CAROOT` points into your own home, and Keychain Access lists the
+      "mkcert development CA" in the login keychain.
+- [ ] Only if this Mac ran a version of sandbox from before the resolver: the setup output
+      says it removed `/usr/local/bin/sandbox-hosts`, the rule in `/etc/sudoers.d`, the
+      launchd job `/Library/LaunchDaemons/sandbox.loopback-aliases.plist` and the `lo0`
+      aliases, and any `# sandbox:` blocks in `/etc/hosts`. Afterwards none of those files is
+      left over, and `ifconfig lo0` shows `127.0.0.1` as its only `inet` address.
 
-## Two sets side by side
+## The harness
 
-From the scratch directory:
+- [ ] Run it, keeping the setup you just installed (it needs no sudo in this mode):
 
-- [ ] `sandbox rel-a up --repos api jobs web` and `sandbox rel-b up --repos api jobs web`,
-      started in two terminals at the same time, both succeed. Each prints its bindings,
-      and the two sets have different IPs (each binds `mysql` to port 3306 on its own IP).
-- [ ] `grep -A8 'sandbox:rel-a' /etc/hosts` shows the set's block, with
-      `web.rel-a.test` and `admin.rel-a.test` on the same IP.
-- [ ] `curl -sS https://web.rel-a.test/` and `curl -sS https://admin.rel-a.test/` answer
-      with JSON (no `-k`, no `--resolve`): `APP_URL` is `https://web.rel-a.test`.
-- [ ] Safari and Chrome open `https://web.rel-a.test/` with no certificate warning.
-- [ ] From the agent: `sandbox rel-a sh` then `curl -sS https://web.rel-a.test/` answers
-      the same JSON.
-- [ ] The init hook ran: `sandbox rel-a sh mysql`, then
-      `mysql -uroot -psandbox -e 'SHOW DATABASES'` lists `web_app`. Only one `mysql`
-      container runs for the set (`docker ps --filter label=sandbox.set=rel-a`).
-- [ ] Files the agent creates in a worktree (`sandbox rel-a sh --repo api`, then
-      `touch from-agent`) are owned by you on the Mac.
-- [ ] `sandbox status` lists both sets as running; `sandbox rel-a urls` lists both web URLs.
-- [ ] A third set while two are running, `sandbox rel-c up --repos api jobs web`, fails
-      before any container starts and suggests rerunning setup with a larger `--sets`.
-      Run `sandbox rel-c destroy` afterwards.
+      ```console
+      $ SANDBOX_E2E=1 SANDBOX_E2E_KEEP_SETUP=1 uv run pytest -m e2e tests/e2e
+      ```
 
-## Down, destroy, uninstall
+      It ends with `1 passed` and a report whose first line reads
+      `sandbox walkthrough: N checks: N passed, 0 failed, 0 not run`. Paste that line into
+      the release issue. If anything failed, paste the failed checks with their output; a
+      line starting `diagnostic only` says whether the resolver itself answered.
+- [ ] From the report, paste the line of the `up --recreate` phase that reads
+      "connect to all 7 addresses ... (took N s)". It is the measurement of how quickly
+      macOS follows a recreated container; the harness allows 10 seconds.
+- [ ] The harness left nothing behind: `docker ps -a --filter label=sandbox.set` lists no
+      container, and `/etc/resolver/test` is still there (this mode keeps your setup).
 
-- [ ] `sandbox rel-a down` and `sandbox rel-b down` succeed. Their blocks are gone from
-      `/etc/hosts`, `curl https://web.rel-a.test/` no longer resolves, and the worktrees are
-      still in the sets root.
-- [ ] `sandbox rel-a destroy` refuses while `api` holds the untracked `from-agent`, then
-      `sandbox rel-a destroy --force --branches` removes the set directory. `git -C api
-      worktree list` no longer lists it and `agent/rel-a` is gone.
-- [ ] `sandbox rel-b destroy --branches` succeeds.
-- [ ] `sudo sandbox setup --uninstall` removes the helper, the sudoers rule and the plist,
-      and prints the `mkcert -uninstall` hint. `ifconfig lo0` no longer lists anything in
-      `127.42.0.0/16`.
-- [ ] `sandbox rel-a up --repos api jobs web` now fails before creating anything, naming
-      `sudo sandbox setup`.
+On a Mac whose user has passwordless sudo (a CI machine, not a laptop), run it without the
+second switch instead: `SANDBOX_E2E=1 uv run pytest -m e2e tests/e2e`. The harness then runs
+`sudo sandbox setup` and `sudo sandbox setup --uninstall` itself and checks both.
+
+## What the harness cannot see
+
+Bring one set up for these. In a scratch directory, copy `tests/fixtures/web-repo` to `web`
+and commit it on `main` (`git init -b main && git add -A && git commit -m initial`), then
+from that directory run `sandbox rel-a up --repos web` (with the checkout's
+`.venv/bin/sandbox`).
+
+- [ ] Safari and Chrome open `https://web.rel-a.test/` and `https://admin.rel-a.test/` with
+      no certificate warning. (Firefox only if it is installed and `mkcert -install` said it
+      added the CA to it.)
+- [ ] Restart the Mac with the set still up. After logging in and once OrbStack has
+      started, without running any `sandbox` command: `docker ps --filter
+      label=sandbox.resolver=true` lists `sandbox_resolver` as running, and
+      `curl -sS https://web.rel-a.test/` answers with JSON.
+- [ ] With "Allow access to container domains & IPs" switched off in OrbStack's settings,
+      `sandbox rel-b up --repos web` fails before creating anything
+      (`docker ps -a --filter label=sandbox.set=rel-b` lists nothing) and its message names
+      that setting. Switch it back on.
+- [ ] Only if Docker Desktop is also installed: quit OrbStack, start Docker Desktop, and
+      run `sandbox rel-b up --repos web`. It fails before creating anything and its message
+      names OrbStack. Quit Docker Desktop and start OrbStack again.
+- [ ] `sandbox rel-a down`, then `sandbox rel-a destroy --branches`, both succeed.
+
+## Uninstall (needs your password)
+
+- [ ] `sudo env "PATH=$PATH" .venv/bin/sandbox setup --uninstall` succeeds, says it removed
+      `/etc/resolver/test` and the resolver, and prints the `mkcert -uninstall` hint.
+- [ ] `ls /etc/resolver/test` finds nothing and `docker ps -a --filter
+      label=sandbox.resolver=true` lists no container.
+- [ ] `sandbox rel-a up --repos web` now fails before creating anything, naming
+      `sudo sandbox setup`. Run setup again if you use sandbox on this Mac.
 
 ## Claude Code (needs a Claude account)
 
-- [ ] `sandbox rel-a claude` starts Claude Code in the agent. The first run asks you to
-      `/login`, and a second set reuses that login without asking again.
+- [ ] With a set up, `sandbox rel-a claude` starts Claude Code in the agent. The first run
+      asks you to `/login`, and a second set reuses that login without asking again.

@@ -29,7 +29,8 @@ surface shrinks to pointing the OS at the resolver once.
   addresses. macOS needs OrbStack.
 - The developer's machine can reach every port a container listens on, the agent's
   included; `ports:` in a repo's compose file is a declaration, not a gate.
-- Addresses change on every `up`; only the set hostname is stable.
+- A container's address changes whenever it is recreated (`down` and `up`, `up --recreate`);
+  only the set hostname is stable.
 - The resolver sits on every set's network, so a container that queries it directly can
   learn other sets' hostnames. It cannot connect to them.
 - Only macOS and systemd-resolved hosts are set up automatically.
