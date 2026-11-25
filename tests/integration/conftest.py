@@ -10,9 +10,16 @@ port>``. So each run claims a loopback /16 of its own (:func:`run_ip_pool`) and 
 gets a /20 of it as its ``ip_pool`` (:func:`ip_pool`), never the default 127.42.0.0/16 that
 real sets lease from. See :mod:`tests.ip_pools` for the claim. Set ``SANDBOX_TEST_IP_POOL``
 to pin the run's pool instead.
+
+The resolver is global to the host as well, and deliberately shared: every test's sets are
+attached to the one resolver, as real sets are. Tests clean up with a plain ``docker compose
+down``, which cannot remove a network the resolver is still on, so the resolver is taken
+off this run's networks before each test's fixtures are torn down
+(:func:`pytest_runtest_teardown`). The resolver itself is left running, like after ``down``.
 """
 
 import itertools
+import json
 import os
 import secrets
 import shutil
@@ -23,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from sandbox.compose import project_name
+from sandbox.compose.resolver import RESOLVER_CONTAINER
 from sandbox.names import validate_set_name
 from tests.conftest import Env
 from tests.ip_pools import claim_run_pool
@@ -70,6 +79,32 @@ def ip_in_block(pool: IPv4Network, block: int, host: int) -> str:
 def unique_set(base: str) -> str:
     """A set name (hence Compose project ``sandbox-<name>``) unique to this test run."""
     return validate_set_name(f"it-{RUN_ID}-{base}")
+
+
+def resolver_networks() -> set[str]:
+    """The networks the resolver is on (none when there is no resolver)."""
+    inspected = subprocess.run(
+        ["docker", "container", "inspect", "--format", "{{json .NetworkSettings.Networks}}",
+         RESOLVER_CONTAINER],
+        capture_output=True,
+        text=True,
+        check=False,
+    )  # fmt: skip
+    return set(json.loads(inspected.stdout) or {}) if inspected.returncode == 0 else set()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_teardown() -> None:
+    """Before the test's fixtures tear down: take the resolver off this run's set networks."""
+    if shutil.which("docker") is None:
+        return
+    for network in resolver_networks():
+        if network.startswith(project_name(f"it-{RUN_ID}-")):
+            subprocess.run(
+                ["docker", "network", "disconnect", "--force", network, RESOLVER_CONTAINER],
+                capture_output=True,
+                check=False,
+            )
 
 
 GIT_IDENTITY = {

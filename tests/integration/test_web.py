@@ -18,8 +18,10 @@ import pytest
 
 from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
+from sandbox.compose.resolver import RESOLVER_ADDRESS, RESOLVER_PORT
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
+from tests.dns import lookup
 from tests.integration.conftest import git, unique_set
 
 pytestmark = pytest.mark.integration
@@ -173,3 +175,21 @@ def test_web_app_is_served_under_a_non_default_domain(
     assert f"{ip}\t{host}\n" in hosts
     assert f"{ip}\t{admin}\n" in hosts
     assert f"web.{SET}.test" not in hosts
+
+
+def test_the_resolver_answers_the_web_app_and_its_extra_host_with_the_web_apps_address(
+    env: Env, web_repo: Path, caroot: Path
+) -> None:
+    result = invoke([SET, "up", "--repos", "web"], SubprocessGit(), SubprocessCompose())
+
+    assert result.exit_code == 0, result.output
+    template = f'{{{{(index .NetworkSettings.Networks "{PROJECT}_default").IPAddress}}}}'
+    container = subprocess.run(
+        ["docker", "container", "inspect", "--format", template, f"{PROJECT}-web-1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert container
+    for host in (HOST, ADMIN):
+        assert lookup(host, RESOLVER_ADDRESS, RESOLVER_PORT).addresses == (container,), host

@@ -18,6 +18,7 @@ from sandbox.provisioner import Provisioner
 from tests.conftest import Env, invoke
 from tests.fakes import FakeGit
 from tests.fakes_compose import FakeCompose
+from tests.fakes_docker import FakeDocker
 
 MYSQL = "services:\n  mysql:\n    image: mysql:8.4\n"
 UP = ["jira-123", "up", "--repos", "api"]
@@ -331,7 +332,9 @@ class HangingCompose(FakeCompose):
 async def _cancel_mid_up(env: Env, compose: HangingCompose, *, cancels: int) -> None:
     git = FakeGit()
     make_repo(env, git)
-    provisioner = Provisioner(load_config(), git, compose, lambda _: None)
+    provisioner = Provisioner(
+        load_config(), git, compose, lambda _: None, docker=FakeDocker(compose)
+    )
     task = asyncio.create_task(provisioner.up("jira-123", repos=["api"], cwd=env.cwd))
     await compose.started.wait()
     for _ in range(cancels):

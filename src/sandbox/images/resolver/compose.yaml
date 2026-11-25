@@ -1,0 +1,25 @@
+# The resolver's own Compose project: one container, shared by every set and belonging to
+# none. sandbox starts it with the variables below set (`sandbox.compose.resolver`); set
+# networks are attached and detached around it with `docker network connect`.
+services:
+  resolver:
+    image: ${SANDBOX_RESOLVER_IMAGE:?set by sandbox}
+    build:
+      context: .
+    # Built from this directory when missing and never pulled, so an image of the same
+    # name on a registry can't stand in for the bundled one.
+    pull_policy: never
+    container_name: ${SANDBOX_RESOLVER_CONTAINER:?set by sandbox}
+    command: ["--server=/${SANDBOX_RESOLVER_DOMAIN:?set by sandbox}/127.0.0.11"]
+    # An upstream DNS server that cannot answer, so Docker's DNS fails a name it does not
+    # know at once instead of forwarding it to the machine's DNS servers.
+    dns: ["127.0.0.1"]
+    # The machine's loopback only. This goes through the project's own network, which
+    # stays attached for the resolver's lifetime.
+    ports:
+      - "127.0.0.1:${SANDBOX_RESOLVER_PORT:?set by sandbox}:53/udp"
+      - "127.0.0.1:${SANDBOX_RESOLVER_PORT:?set by sandbox}:53/tcp"
+    # Comes back with Docker, which restores the networks it was attached to.
+    restart: always
+    labels:
+      sandbox.resolver: "true"

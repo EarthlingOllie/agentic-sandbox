@@ -6,6 +6,7 @@
 - ``dedup``: one instance per same-named service across repos, or a conflict diff.
 - ``network``: each service's IP-bound native ports and ``<service>.<set>.<domain>`` aliases.
 - ``web``: HTTPS web apps (443, the unprivileged-port sysctl, TLS and CA mounts).
+- ``resolver``: the shared resolver's own Compose project, image tag and port.
 
 Later concerns (networking, dedup, init hooks, the agent, web apps) add a module here and
 register their fragment in ``override.FRAGMENTS``.

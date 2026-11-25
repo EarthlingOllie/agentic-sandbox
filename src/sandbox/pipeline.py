@@ -13,7 +13,8 @@
    says so and names the Compose project that may be left.
 
 A step is a name, an async ``run(ctx)`` and an optional async ``rollback(ctx)``. Rollback
-undoes the set's own infrastructure only (containers, network, volumes, host entries); plan
+undoes the set's own infrastructure only (containers, network, volumes, host entries, the
+resolver's attachment); plan
 and the agent's clones are kept so rerunning ``up`` resumes. Steps that fan out (one task per repo)
 use :func:`fail_fast`, a ``TaskGroup`` that cancels sibling work on the first failure.
 """
@@ -35,6 +36,7 @@ from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.services import RepoCompose
 from sandbox.compose.web import WebApp
 from sandbox.config import Config
+from sandbox.docker import Docker, SubprocessDocker
 from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.leases import SetLease
@@ -71,6 +73,8 @@ class UpContext:
     hosts: "HostsWriter | None" = None
     mkcert: Mkcert = field(default_factory=SubprocessMkcert)
     host: Host = field(default_factory=Host)
+    # Starts, attaches and detaches the resolver.
+    docker: Docker = field(default_factory=SubprocessDocker)
     # Filled in by validation steps.
     repo_composes: list[RepoCompose] = field(default_factory=list[RepoCompose])
     services: list[str] = field(default_factory=list[str])

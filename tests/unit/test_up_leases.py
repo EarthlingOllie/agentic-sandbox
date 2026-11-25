@@ -118,7 +118,7 @@ def test_bare_prune_during_an_in_flight_first_up_keeps_its_lease(
 
     async def scenario() -> None:
         up = asyncio.create_task(
-            Provisioner(config, git, docker.compose, lambda _: None).up(
+            Provisioner(config, git, docker.compose, lambda _: None, docker=docker).up(
                 "jira-123", repos=["api"], cwd=env.cwd
             )
         )
@@ -131,7 +131,7 @@ def test_bare_prune_during_an_in_flight_first_up_keeps_its_lease(
         assert report.pruned == []
         assert leased_sets(env) == held
         # Another set's `up` now must not be handed the same block.
-        other = await Provisioner(config, git, docker.compose, lambda _: None).up(
+        other = await Provisioner(config, git, docker.compose, lambda _: None, docker=docker).up(
             "jira-456", repos=["api"], cwd=env.cwd
         )
         assert other.set_name == "jira-456"

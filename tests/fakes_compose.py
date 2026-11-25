@@ -63,6 +63,9 @@ class FakeCompose:
     # The command's last argument -> the (status, output) `exec_captured` returns for it;
     # anything else succeeds with no output.
     captured_results: dict[str, tuple[int, str]] = field(default_factory=dict[str, tuple[int, str]])
+    # The networks the resolver is attached to (``tests.fakes_docker.FakeDocker`` keeps them
+    # here, so they outlive one CLI invocation): `down` cannot remove such a network.
+    resolver_networks: set[str] = field(default_factory=set[str])
 
     async def up(self, project: str, files: list[Path]) -> None:
         self.calls.append(("up", project))
@@ -79,6 +82,8 @@ class FakeCompose:
         self.calls.append(("down", project))
         if self.down_error is not None:
             raise ComposeError(self.down_error)
+        if f"{project}_default" in self.resolver_networks:
+            raise ComposeError(f"failed to remove network {project}_default: has active endpoints")
         self.running.pop(project, None)
         self.stopped_services.pop(project, None)
 

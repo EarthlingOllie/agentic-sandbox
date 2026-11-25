@@ -17,7 +17,7 @@ def down(ctx: typer.Context) -> None:
     set_name = current_set(ctx, "down")
     try:
         deps = get_deps(ctx)
-        provisioner = Provisioner(load_config(), deps.git, deps.compose, warn)
+        provisioner = Provisioner(load_config(), deps.git, deps.compose, warn, docker=deps.docker)
         result = asyncio.run(provisioner.down(set_name))
     except SandboxError as exc:
         failure(exc)

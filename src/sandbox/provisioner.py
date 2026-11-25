@@ -13,13 +13,13 @@
 - ``PROVISION_STEPS`` write the plan, ensure the agent's clones, issue or reuse the set's TLS
   certificate (``sandbox.web``) and bring services up healthy as
   Compose project ``sandbox-<set>``, run the repos' init hooks in them (``sandbox.hooks``),
-  then write the set's hosts block (``sandbox.hosts``); on failure or Ctrl-C, started steps
-  roll back.
+  attach the resolver to the set (``sandbox.resolver``), then write the set's hosts block
+  (``sandbox.hosts``); on failure or Ctrl-C, started steps roll back.
 
 A later concern adds its step in its own module and one line to one of the two lists.
 After the steps (and on a no-op), ``up`` syncs each clone's ``agent/<set>`` into its source
-repo (``sandbox.clones``). ``down`` stops the project, removes the hosts block, syncs the
-same way and leaves the clones alone.
+repo (``sandbox.clones``). ``down`` detaches the resolver, stops the project, removes the
+hosts block, syncs the same way and leaves the clones alone.
 """
 
 from collections.abc import Sequence
@@ -46,6 +46,7 @@ from sandbox.compose.override import OverrideContext, write_override
 from sandbox.compose.services import SANDBOX_DIRNAME, RepoCompose, load_repo_compose
 from sandbox.compose.web import extra_hostnames
 from sandbox.config import Config
+from sandbox.docker import Docker, SubprocessDocker
 from sandbox.errors import SandboxError
 from sandbox.git import Git
 from sandbox.hooks import check_hooks, run_hooks
@@ -64,6 +65,7 @@ from sandbox.plan import (
 )
 from sandbox.platforms import Host
 from sandbox.preflight import check_prerequisites
+from sandbox.resolver import attach_resolver, detach, detach_resolver
 from sandbox.state import UpAction, decide, observe
 from sandbox.web import check_web_apps, issue_certificate
 
@@ -190,7 +192,7 @@ async def _ensure_clones(ctx: UpContext) -> None:
 
 async def _stop_for_recreate(ctx: UpContext) -> None:
     if ctx.action is UpAction.RECREATE:
-        await ctx.compose.down(ctx.project)
+        await _compose_down(ctx)
 
 
 async def _compose_up(ctx: UpContext) -> None:
@@ -215,6 +217,8 @@ async def _compose_up(ctx: UpContext) -> None:
 
 
 async def _compose_down(ctx: UpContext) -> None:
+    # A set that ran before has the resolver on its network, which Docker would not remove.
+    await detach_resolver(ctx)
     await ctx.compose.down(ctx.project)
 
 
@@ -238,6 +242,7 @@ PROVISION_STEPS: Final[list[Step]] = [
     Step("certificate", issue_certificate),
     Step("compose-up", _compose_up, rollback=_compose_down),
     Step("init-hooks", run_hooks),
+    Step("resolver", attach_resolver, rollback=detach_resolver),
     Step("hosts-block", write_hosts_block, rollback=remove_hosts_block),
     # Register post-up steps (hosts block, init hooks) below this line.
 ]
@@ -254,8 +259,10 @@ class Provisioner:
         hosts: HostsWriter | None = None,
         mkcert: Mkcert | None = None,
         host: Host | None = None,
+        docker: Docker | None = None,
     ) -> None:
         self._config = config
+        self._docker = docker if docker is not None else SubprocessDocker()
         self._host = host if host is not None else Host()
         self._mkcert = mkcert if mkcert is not None else SubprocessMkcert()
         self._hosts = hosts if hosts is not None else hosts_writer(config)
@@ -313,6 +320,7 @@ class Provisioner:
             hosts=self._hosts,
             mkcert=self._mkcert,
             host=self._host,
+            docker=self._docker,
         )
         # Held throughout, so bare `prune` leaves this set's lease alone while it has none of
         # the plan that would show the lease is in use.
@@ -321,6 +329,9 @@ class Provisioner:
                 await validate(VALIDATION_STEPS, ctx)
                 if ctx.action is not UpAction.NOOP:
                     await provision(PROVISION_STEPS, ctx)
+                else:
+                    # Nothing to provision, but the resolver may have been removed since.
+                    await attach_resolver(ctx)
                 synced = await self._clones.sync_set(set_dir, ctx.plan, ctx.branch)
             except BaseException:
                 if ctx.lease_created and not plan_file.exists():
@@ -354,6 +365,7 @@ class Provisioner:
         if not plan_path(set_dir).exists():
             raise SandboxError(f"no set {set_name!r}: {plan_path(set_dir)} does not exist")
         project = project_name(set_name)
+        await detach(self._docker, set_name)
         await self._compose.down(project)
         await self._hosts.remove(set_name)
         plan = load_set_plan(set_dir)

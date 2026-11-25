@@ -19,6 +19,7 @@ from sandbox.context import Deps
 from tests.conftest import Env
 from tests.fakes import FakeGit
 from tests.fakes_compose import FakeCompose
+from tests.fakes_docker import FakeDocker
 from tests.fakes_images import FakeImageProbe
 
 TOOLS = {"sh", "git", "claude"}
@@ -47,7 +48,8 @@ class Harness:
             handle.write(yaml.safe_dump({"agent": agent}))
 
     def invoke(self, *args: str) -> Result:
-        deps = Deps(git=self.git, compose=self.compose, images=self.images)
+        docker = FakeDocker(self.compose)
+        deps = Deps(git=self.git, compose=self.compose, images=self.images, docker=docker)
         return CliRunner().invoke(app, list(args), obj=deps)
 
     def up(self, *args: str) -> Result:

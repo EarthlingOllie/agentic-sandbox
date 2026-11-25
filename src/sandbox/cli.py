@@ -146,6 +146,7 @@ def up(
             images=deps.images,
             mkcert=deps.mkcert,
             host=deps.host,
+            docker=deps.docker,
         )
         result = asyncio.run(
             provisioner.up(
