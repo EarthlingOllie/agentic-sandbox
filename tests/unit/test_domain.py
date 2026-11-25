@@ -144,7 +144,7 @@ def test_status_shows_hostnames_under_the_configured_domain(env: Env) -> None:
         s["name"]: (s["hostname"], s["ip"]) for s in json.loads(as_json.stdout)["services"]
     }
     assert hostnames == {
-        "agent": (None, None),
+        "agent": ("agent.jira-123.sandbox.test", None),
         "mysql": ("mysql.jira-123.sandbox.test", "172.20.0.2"),
         "redis": ("redis.jira-123.sandbox.test", "172.20.0.3"),
     }

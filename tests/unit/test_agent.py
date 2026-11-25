@@ -152,3 +152,18 @@ def test_up_does_not_follow_a_symlink_the_agent_planted_at_the_override_temp_fil
     assert victim.read_text() == "ssh-ed25519 AAAA developer\n"
     assert not (set_dir / "override.yaml").is_symlink()
     assert "agent" in load_compose_yaml(set_dir / "override.yaml")["services"]
+
+
+def test_the_agent_carries_its_set_hostname_on_the_set_network(env: Env) -> None:
+    agent = up(env, "web")
+
+    assert agent["networks"] == {"default": {"aliases": ["agent.jira-123.test"]}}
+
+
+def test_the_agents_set_hostname_is_under_the_configured_domain(env: Env) -> None:
+    with env.config_file.open("a") as config:
+        config.write("domain: sandbox.example\n")
+
+    agent = up(env, "web")
+
+    assert agent["networks"] == {"default": {"aliases": ["agent.jira-123.sandbox.example"]}}

@@ -65,7 +65,9 @@ def test_two_sets_share_one_resolver(env: Env) -> None:
     assert docker.resolver_networks == {"sandbox-jira-123_default", "sandbox-jira-456_default"}
 
 
-def test_a_set_without_services_does_not_start_the_resolver(env: Env) -> None:
+def test_a_set_without_services_is_attached_too_so_its_agents_hostname_resolves(
+    env: Env,
+) -> None:
     git, compose = FakeGit(), FakeCompose()
     docker = FakeDocker(compose)
     make_repo(env, git, "api", "services: {}\n")
@@ -73,8 +75,8 @@ def test_a_set_without_services_does_not_start_the_resolver(env: Env) -> None:
     result = invoke(["jira-123", "up", "--repos", "api"], git, compose, docker)
 
     assert result.exit_code == 0, result.output
-    assert docker.resolver_domain is None
-    assert docker.resolver_networks == set()
+    assert docker.resolver_domain == "test"
+    assert docker.resolver_networks == {"sandbox-jira-123_default"}
 
 
 def test_up_of_a_running_set_brings_a_missing_resolver_back(env: Env) -> None:

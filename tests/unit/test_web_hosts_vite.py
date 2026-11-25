@@ -132,6 +132,13 @@ def test_malformed_extra_hosts_fail_before_any_container_starts(
             "hostname admin.jira-123.test is used more than once in set 'jira-123': "
             "web app of repo admin; extra host of the web app of repo web",
         ),
+        # The agent answers at agent.<set>.<domain>: an extra host may not take that name.
+        (
+            "[agent]",
+            None,
+            "hostname agent.jira-123.test is used more than once in set 'jira-123': "
+            "the agent; extra host of the web app of repo web",
+        ),
         (
             "[cache]",
             "services:\n  cache:\n    image: redis:7\n",

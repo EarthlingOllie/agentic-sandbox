@@ -202,7 +202,7 @@ def _service(
         name=service,
         state=container.state if container else MISSING,
         health=container.health if container and running else None,
-        hostname=None if service == AGENT_SERVICE else hostname(service, set_name, domain),
+        hostname=hostname(service, set_name, domain),
         ip=container.address if container and running else None,
     )
 

@@ -5,7 +5,8 @@ so its URL is predictable: ``https://<repo>.<set>.<domain>``. It may add extra o
 (``hosts: [admin, portal]``, served as ``admin.<set>.<domain>`` on the same container and IP, so
 the set's wildcard certificate covers them) and a Vite dev server port (``vite: 5173``).
 Validation (``check_web_apps``) reads each repo's own compose file, refuses anything else,
-refuses a hostname used twice in the set (extra hosts included), and checks the machine's
+refuses a hostname used twice in the set (extra hosts and the agent's ``agent.<set>.<domain>``
+included), and checks the machine's
 mkcert CA is there, all before any container starts.
 Provisioning (``issue_certificate``) then issues or reuses the set's wildcard certificate
 (``sandbox.certs``); ``sandbox.compose.web`` renders the Compose side.
@@ -19,6 +20,7 @@ from pathlib import Path
 from typing import Any, Final, cast
 
 from sandbox.certs import ensure_certificate, root_ca
+from sandbox.compose import AGENT_SERVICE
 from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.network import hostname
 from sandbox.compose.services import RepoCompose
@@ -161,8 +163,10 @@ def _vite(where: str, value: object) -> int | None:
 def hostname_claims(
     set_name: str, domain: str, graph: ServiceGraph, web_apps: Sequence[WebApp]
 ) -> dict[str, list[str]]:
-    """Every hostname in the set -> what claims it (a web app, or a service and its repos)."""
+    """Every hostname in the set -> what claims it (the agent, a web app, or a service and
+    its repos)."""
     claims: dict[str, list[str]] = defaultdict(list)
+    claims[hostname(AGENT_SERVICE, set_name, domain)].append("the agent")
     apps = {app.service: app for app in web_apps}
     for app in web_apps:
         claims[app.hostname].append(f"web app of repo {app.repo}")

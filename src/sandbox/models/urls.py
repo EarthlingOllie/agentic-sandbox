@@ -39,3 +39,6 @@ class SetUrls(_Model):
     running: bool
     web: list[WebUrl]
     services: list[ServiceAddress]
+    # The agent's set hostname, ``agent.<set>.<domain>``, without a port: the agent declares
+    # none, and whatever it serves is reached there on the port it listens on.
+    agent: ServiceAddress

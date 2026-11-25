@@ -49,6 +49,7 @@ ADDRESSES = {
     ("jira-123", "mysql"): "172.20.0.2",
     ("jira-123", "redis"): "172.20.0.3",
     ("jira-123", "web"): "172.20.0.4",
+    ("jira-123", "agent"): "172.20.0.5",
 }
 
 
@@ -76,6 +77,8 @@ def test_lists_web_apps_as_https_urls_and_services_as_host_port_on_conventional_
             {"address": "mysql.jira-123.test:33060", "service": "mysql", "ip": "172.20.0.2"},
             {"address": "redis.jira-123.test", "service": "redis", "ip": "172.20.0.3"},
         ],
+        # The agent declares no ports: whatever it serves is opened at its set hostname.
+        "agent": {"address": "agent.jira-123.test", "service": "agent", "ip": "172.20.0.5"},
     }
 
 
@@ -119,6 +122,9 @@ def test_the_table_lists_the_same_addresses_as_the_json(env: Env, mkcert: FakeMk
         ["mysql.jira-123.test:3306", "172.20.0.2"],
         ["mysql.jira-123.test:33060", "172.20.0.2"],
         ["redis.jira-123.test", "172.20.0.3"],
+        [],
+        ["AGENT", "IP"],
+        ["agent.jira-123.test", "172.20.0.5"],
     ]
 
 
@@ -137,11 +143,13 @@ def test_a_stopped_set_lists_the_same_addresses_without_ips(env: Env, mkcert: Fa
     assert [s["address"] for s in stopped["services"]] == [
         s["address"] for s in running["services"]
     ]
+    assert stopped["agent"] == {"address": "agent.jira-123.test", "service": "agent", "ip": None}
     assert {entry["ip"] for entry in [*stopped["web"], *stopped["services"]]} == {None}
     table = urls(git, docker)
     assert "not running" in table.splitlines()[0]
     assert "lease" not in table
     assert ["mysql.jira-123.test:3306", "-"] in [line.split() for line in table.splitlines()]
+    assert ["agent.jira-123.test", "-"] in [line.split() for line in table.splitlines()]
 
 
 def test_the_address_is_optional_in_the_urls_model() -> None:
@@ -167,8 +175,8 @@ def test_a_partly_running_set_is_marked_not_running(env: Env, mkcert: FakeMkcert
     }
 
 
-def test_a_set_without_services_has_no_addresses(env: Env) -> None:
-    git, docker = FakeGit(), FakeDocker()
+def test_a_set_without_services_lists_only_the_agent(env: Env) -> None:
+    git, docker = FakeGit(), FakeDocker(addresses={("jira-123", "agent"): "172.20.0.2"})
     env.make_repo_dir("docs")
     git.add_repo(env.cwd / "docs")
     assert invoke(["jira-123", "up", "--repos", "docs"], git, docker.compose, docker).exit_code == 0
@@ -176,7 +184,25 @@ def test_a_set_without_services_has_no_addresses(env: Env) -> None:
     listing = urls(git, docker, "--json")
 
     assert (listing["web"], listing["services"]) == ([], [])
-    assert "no web apps or services" in urls(git, docker)
+    assert listing["agent"] == {
+        "address": "agent.jira-123.test",
+        "service": "agent",
+        "ip": "172.20.0.2",
+    }
+    table = urls(git, docker)
+    assert "no web apps or services" in table
+    assert ["agent.jira-123.test", "172.20.0.2"] in [line.split() for line in table.splitlines()]
+
+
+def test_the_agent_is_listed_under_the_configured_domain(env: Env) -> None:
+    with env.config_file.open("a") as config:
+        config.write("domain: sandbox.example\n")
+    git, docker = FakeGit(), FakeDocker()
+    env.make_repo_dir("docs")
+    git.add_repo(env.cwd / "docs")
+    assert invoke(["jira-123", "up", "--repos", "docs"], git, docker.compose, docker).exit_code == 0
+
+    assert urls(git, docker, "--json")["agent"]["address"] == "agent.jira-123.sandbox.example"
 
 
 def test_an_unknown_set_fails(env: Env) -> None:

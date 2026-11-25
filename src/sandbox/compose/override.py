@@ -62,7 +62,9 @@ def _relocate(ctx: OverrideContext) -> dict[str, Any]:
 
 
 def _agent(ctx: OverrideContext) -> dict[str, Any]:
-    return agent_fragment(ctx.set_name, ctx.set_dir, ctx.sources, ctx.agent, ctx.root_ca)
+    return agent_fragment(
+        ctx.set_name, ctx.domain, ctx.set_dir, ctx.sources, ctx.agent, ctx.root_ca
+    )
 
 
 def _network(ctx: OverrideContext) -> dict[str, Any]:

@@ -447,6 +447,44 @@ def test_extra_services_join_the_set_network_and_are_labelled(h: Harness) -> Non
     assert "proxy" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("networks", "expected"),
+    [
+        (None, {"default": {"aliases": ["agent.jira-123.test"]}}),
+        (
+            ["egress"],
+            {"egress": None, "default": {"aliases": ["agent.jira-123.test"]}},
+        ),
+        (
+            {"egress": {"aliases": ["out"]}},
+            {"egress": {"aliases": ["out"]}, "default": {"aliases": ["agent.jira-123.test"]}},
+        ),
+        # What the override says about the set network is kept next to the set hostname.
+        (
+            {"default": {"aliases": ["worker"], "priority": 10}},
+            {"default": {"aliases": ["agent.jira-123.test", "worker"], "priority": 10}},
+        ),
+        (
+            {"default": {"aliases": ["agent.jira-123.test"]}},
+            {"default": {"aliases": ["agent.jira-123.test"]}},
+        ),
+    ],
+)
+def test_an_overridden_agent_still_carries_its_set_hostname_on_the_set_network(
+    h: Harness, networks: object, expected: dict[str, Any]
+) -> None:
+    h.repo("api")
+    agent: dict[str, Any] = {"image": "corp/agent:1"}
+    if networks is not None:
+        agent["networks"] = networks
+    h.config({"services": {"agent": agent}, "networks": {"egress": {}}})
+
+    result = h.up("--repos", "api")
+
+    assert result.exit_code == 0, result.output
+    assert h.agent()["networks"] == expected
+
+
 def test_extra_service_may_not_shadow_a_repo_service(h: Harness) -> None:
     h.repo("api", "services:\n  mysql:\n    image: mysql:8.4\n")
     h.config({"services": {"mysql": {"image": "mysql:5.7"}}})

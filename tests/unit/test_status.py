@@ -123,6 +123,7 @@ def test_set_status_shows_each_running_services_hostname_and_current_address(env
     docker.health[("jira-123", "mysql")] = "healthy"
     docker.addresses[("jira-123", "mysql")] = "172.20.0.3"
     docker.addresses[("jira-123", "redis")] = "172.20.0.4"
+    docker.addresses[("jira-123", "agent")] = "172.20.0.2"
     docker.compose.stopped_services[project_name("jira-123")] = {"redis"}
 
     detail = status_json(git, docker, "jira-123")
@@ -131,7 +132,13 @@ def test_set_status_shows_each_running_services_hostname_and_current_address(env
     assert detail["state"] == "partial"
     assert detail["project"] == "sandbox-jira-123"
     assert detail["services"] == [
-        {"name": "agent", "state": "running", "health": None, "hostname": None, "ip": None},
+        {
+            "name": "agent",
+            "state": "running",
+            "health": None,
+            "hostname": "agent.jira-123.test",
+            "ip": "172.20.0.2",
+        },
         {
             "name": "mysql",
             "state": "running",
@@ -153,6 +160,7 @@ def test_set_status_shows_each_running_services_hostname_and_current_address(env
     assert "set jira-123: partial [sandbox-jira-123]" in table
     rows = [line.split() for line in table.splitlines()]
     assert ["SERVICE", "STATE", "HEALTH", "HOSTNAME", "ADDRESS"] in rows
+    assert ["agent", "running", "-", "agent.jira-123.test", "172.20.0.2"] in rows
     assert ["mysql", "running", "healthy", "mysql.jira-123.test", "172.20.0.3"] in rows
     assert ["redis", "exited", "-", "redis.jira-123.test", "-"] in rows
 
@@ -237,12 +245,14 @@ def test_set_status_of_a_stopped_set_shows_hostnames_without_addresses(env: Env)
     services = {s["name"]: s for s in detail["services"]}
     assert services["mysql"]["state"] == "missing"
     assert services["mysql"]["hostname"] == "mysql.jira-123.test"
+    assert services["agent"]["hostname"] == "agent.jira-123.test"
     assert [s["ip"] for s in detail["services"]] == [None, None, None]
     rows = [
         line.split()
         for line in invoke(["jira-123", "status"], git, docker.compose, docker).stdout.splitlines()
     ]
     assert ["mysql", "missing", "-", "mysql.jira-123.test", "-"] in rows
+    assert ["agent", "missing", "-", "agent.jira-123.test", "-"] in rows
 
 
 def test_the_address_is_optional_in_the_status_model() -> None:

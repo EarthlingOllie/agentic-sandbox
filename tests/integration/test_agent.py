@@ -1,22 +1,28 @@
-"""The agent container against real Docker: hardened, mounts, host UID, `git` in its clone.
+"""The agent container against real Docker: hardened, mounts, host UID, `git` in its clone,
+and its set hostname, `agent.<set>.<domain>`, from the machine and from inside the set.
 
 The first run builds the default agent image (Compose builds it on `up`), which pulls
 `ubuntu:24.04` and installs `claude` from npm.
 """
 
+import json
 import os
 import shutil
 import subprocess
+import time
+import urllib.request
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 from sandbox.compose import project_name
 from sandbox.compose.cli import SubprocessCompose
 from sandbox.git import SubprocessGit
 from tests.conftest import Env, invoke
-from tests.integration.conftest import git, unique_set
+from tests.integration.conftest import container_address, git, resolve, unique_set
 
 pytestmark = pytest.mark.integration
 
@@ -111,3 +117,115 @@ def test_git_works_in_the_clone_and_files_stay_the_developers(env: Env, api: Pat
     synced = invoke([SET, "status"], SubprocessGit(), SubprocessCompose())
     assert synced.exit_code == 0, synced.output
     assert git(api, "log", "-1", "--format=%s", f"agent/{SET}") == "from the agent"
+
+
+# --- the agent's set hostname ------------------------------------------------------------
+
+PORT = 8080
+SERVE = (
+    "require('http').createServer((request, response) => response.end('from the agent'))"
+    f".listen({PORT}, '0.0.0.0')"
+)
+# An agent override that puts the agent on a second network and adds a service to the set.
+OVERRIDE: dict[str, Any] = {
+    "services": {
+        "agent": {"networks": ["egress"]},
+        "probe": {
+            "image": "python:3.12-alpine",
+            "command": ["sleep", "infinity"],
+            "stop_grace_period": "1s",
+        },
+    },
+    "networks": {"egress": {}},
+}
+FETCH = (
+    "import sys, urllib.request; "
+    "print(urllib.request.urlopen(sys.argv[1], timeout=5).read().decode())"
+)
+
+
+def serve_in_agent() -> None:
+    """Start a web server in the agent, the way an agent would: a process it leaves running."""
+    docker("compose", "-p", PROJECT, "exec", "-d", "agent", "node", "-e", SERVE)
+
+
+def fetch(url: str) -> str:
+    """GET ``url`` from this machine, waiting out the moment the listener needs to start."""
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310 - http
+                return response.read().decode()
+        except OSError:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.2)
+
+
+def test_a_listener_in_the_agent_is_reached_at_the_address_its_hostname_resolves_to(
+    api: Path,
+) -> None:
+    name = f"agent.{SET}.test"
+    serve_in_agent()
+
+    # The resolver, asked for the name, answers with the agent container's own address...
+    addresses = resolve(name)
+    assert addresses == (container_address(SET, "agent"),)
+    # ...and this machine reaches what the agent serves there. (The test names the address:
+    # sending the operating system's lookups to the resolver is `sudo sandbox setup`'s job.)
+    assert fetch(f"http://{addresses[0]}:{PORT}/") == "from the agent"
+
+    # `status` and `urls` show the same hostname and address.
+    status = invoke([SET, "status", "--json"], SubprocessGit(), SubprocessCompose())
+    assert status.exit_code == 0, status.output
+    (agent,) = (s for s in json.loads(status.stdout)["services"] if s["name"] == "agent")
+    assert (agent["hostname"], agent["ip"]) == (name, addresses[0])
+    urls = invoke([SET, "urls", "--json"], SubprocessGit(), SubprocessCompose())
+    assert urls.exit_code == 0, urls.output
+    assert json.loads(urls.stdout)["agent"] == {
+        "address": name,
+        "service": "agent",
+        "ip": addresses[0],
+    }
+
+
+def test_the_agents_hostname_no_longer_resolves_once_the_set_is_down(api: Path) -> None:
+    name = f"agent.{SET}.test"
+    assert resolve(name)
+
+    result = invoke([SET, "down"], SubprocessGit(), SubprocessCompose())
+
+    assert result.exit_code == 0, result.output
+    assert resolve(name) == ()
+
+
+def test_with_an_agent_override_the_agent_answers_by_name_from_inside_the_set(
+    env: Env, make_repo: Callable[[str], Path]
+) -> None:
+    make_repo("api")
+    with env.config_file.open("a") as config:
+        config.write(yaml.safe_dump({"agent": OVERRIDE}))
+    name = f"agent.{SET}.test"
+    try:
+        result = invoke([SET, "up", "--repos", "api"], SubprocessGit(), SubprocessCompose())
+        assert result.exit_code == 0, result.output
+        serve_in_agent()
+        on_set_network = container_address(SET, "agent")
+        assert fetch(f"http://{on_set_network}:{PORT}/") == "from the agent"
+
+        # Another container of the set opens it by name...
+        from_inside = docker(
+            "compose", "-p", PROJECT, "exec", "-T", "probe",
+            "python", "-c", FETCH, f"http://{name}:{PORT}/",
+        )  # fmt: skip
+        assert from_inside == "from the agent"
+        # ...the agent knows itself by that name...
+        assert on_set_network in in_agent(f"getent hosts {name}")
+        # ...and the resolver answers the set network's address, not the override network's.
+        assert resolve(name) == (on_set_network,)
+    finally:
+        subprocess.run(
+            ["docker", "compose", "-p", PROJECT, "down", "--volumes", "--remove-orphans"],
+            capture_output=True,
+            check=False,
+        )

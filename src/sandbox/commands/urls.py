@@ -1,4 +1,4 @@
-"""``sandbox SET urls [--json]``: the set's web app URLs and service addresses."""
+"""``sandbox SET urls [--json]``: the set's web app URLs, service addresses and agent."""
 
 import asyncio
 from collections.abc import Sequence
@@ -22,8 +22,9 @@ def urls(
     """List the set's web apps as https:// URLs and its services as host:port.
 
     Each service is listed on the container ports it declares (without a port if it
-    declares none), next to its container's current address. A stopped set lists the same
-    addresses, marked as not running and without container addresses.
+    declares none), next to its container's current address, and the agent at its own
+    hostname. A stopped set lists the same addresses, marked as not running and without
+    container addresses.
     """
     set_name = current_set(ctx, "urls")
     try:
@@ -49,6 +50,7 @@ def render_urls(found: SetUrls) -> str:
         ]
     if not found.web and not found.services:
         lines += ["", "no web apps or services (no .sandbox/compose.yaml services)"]
+    lines += ["", _table(["AGENT", "IP"], [[found.agent.address, _ip(found.agent.ip)]])]
     return "\n".join(lines)
 
 

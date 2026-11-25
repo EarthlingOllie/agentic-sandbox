@@ -107,7 +107,7 @@ def test_status_follows_a_set_through_its_lifecycle(env: Env, mysql_repo: Path) 
     assert listed_state(SET) == "stopped"
     stopped = run(SET, "status", "--json")["services"]
     assert {s["name"]: s["hostname"] for s in stopped} == {
-        "agent": None,
+        "agent": f"agent.{SET}.test",
         "mysql": f"mysql.{SET}.test",
     }
     assert [s["ip"] for s in stopped] == [None, None]

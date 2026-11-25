@@ -37,6 +37,7 @@ from typing import Annotated, Any, Final, cast
 from pydantic import AfterValidator
 
 from sandbox.compose import AGENT_SERVICE, SET_LABEL
+from sandbox.compose.network import SET_NETWORK, hostname
 from sandbox.compose.web import CA_TARGET, read_only_bind
 from sandbox.names import PLAN_FILENAME
 
@@ -102,7 +103,6 @@ FORBIDDEN_AGENT_KEYS: Final = (
     "runtime",
 )
 DOCKER_SOCKETS: Final = (PurePosixPath("/var/run/docker.sock"), PurePosixPath("/run/docker.sock"))
-SET_NETWORK: Final = "default"
 
 
 def validate_agent_override(value: dict[str, Any]) -> dict[str, Any]:
@@ -161,13 +161,17 @@ def overridden_settings(
 
 def agent_fragment(
     set_name: str,
+    domain: str,
     set_dir: Path,
     sources: Mapping[str, Path],
     override: Mapping[str, Any] | None = None,
     root_ca: Path | None = None,
 ) -> dict[str, Any]:
     """The agent service (default, merged with ``override``, guarantees re-applied), plus
-    the override's extra services, networks and volumes."""
+    the override's extra services, networks and volumes.
+
+    The agent answers to its set hostname, ``agent.<set>.<domain>``, on the set network,
+    whatever networks an override attaches it to."""
     # Created here because Docker would otherwise create a missing bind source as root.
     host_claude_dir().mkdir(parents=True, exist_ok=True)
     guarantees = _guarantees(set_name, set_dir, sources, root_ca)
@@ -199,8 +203,9 @@ def agent_fragment(
             "labels": {**labels, SET_LABEL: set_name},
         }
     )
-    if "networks" in service:
-        service["networks"] = _join_set_network(service["networks"])
+    service["networks"] = _with_set_hostname(
+        service.get("networks"), hostname(AGENT_SERVICE, set_name, domain)
+    )
 
     services: dict[str, Any] = {AGENT_SERVICE: service}
     for name in extra_services(override):
@@ -400,6 +405,21 @@ def _join_set_network(networks: object) -> object:
         return names if SET_NETWORK in names else [*names, SET_NETWORK]
     attached = dict(_mapping(networks))
     attached.setdefault(SET_NETWORK, None)
+    return attached
+
+
+def _with_set_hostname(networks: object, name: str) -> dict[str, Any]:
+    """The agent's networks in mapping form, on the set network under ``name`` as well as
+    whatever aliases the override gave it there."""
+    joined = _join_set_network(networks)
+    attached: dict[str, Any] = (
+        {str(network): None for network in cast(list[Any], joined)}
+        if isinstance(joined, list)
+        else dict(_mapping(joined))
+    )
+    own = dict(_mapping(attached.get(SET_NETWORK)))
+    aliases = [alias for alias in cast(list[Any], own.get("aliases") or []) if alias != name]
+    attached[SET_NETWORK] = {**own, "aliases": [name, *aliases]}
     return attached
 
 

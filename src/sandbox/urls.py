@@ -1,5 +1,5 @@
 """A set's addresses, for ``urls``: web apps as ``https://`` URLs, backing services as
-``host:port`` on their conventional ports.
+``host:port`` on their conventional ports, and the agent's set hostname.
 
 The hostnames and ports come from the set's plan and its repos' compose files (normalised
 and merged the way ``up`` merges them, ``sandbox.compose.dedup``): a service is listed once
@@ -7,13 +7,16 @@ per container port it declares, whatever host-side binding the repo wrote next t
 without a port when it declares none. So a stopped set lists the same addresses it will
 have when it is brought back up. Docker is asked whether the set is running and where each
 running container is: that address is shown next to the hostname and is absent otherwise.
+
+The agent is listed too, at ``agent.<set>.<domain>`` without a port: it declares none, and
+something it serves is opened there on whatever port it listens on.
 """
 
 from collections.abc import Mapping
 from ipaddress import IPv4Address
 
 from sandbox.agent import load_plan
-from sandbox.compose import project_name
+from sandbox.compose import AGENT_SERVICE, project_name
 from sandbox.compose.cli import Compose
 from sandbox.compose.dedup import ServiceGraph
 from sandbox.compose.dedup import resolve as resolve_services
@@ -55,6 +58,11 @@ class UrlsReader:
             web=[url for app in apps for url in _web_urls(app, addresses.get(app.service))],
             services=_service_addresses(
                 set_name, domain, graph, {app.service for app in apps}, addresses
+            ),
+            agent=ServiceAddress(
+                address=hostname(AGENT_SERVICE, set_name, domain),
+                service=AGENT_SERVICE,
+                ip=addresses.get(AGENT_SERVICE),
             ),
         )
 

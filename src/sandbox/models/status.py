@@ -38,7 +38,8 @@ class ServiceStatus(_Model):
     # Docker's container state (running, exited, ...), or "missing" without a container.
     state: str
     health: str | None
-    # The set hostname: the service's stable address, running or not.
+    # The set hostname: the service's stable address, running or not (the agent's is
+    # ``agent.<set>.<domain>``).
     hostname: str | None = None
     # The container's current address, read from Docker; absent unless it is running. It
     # changes between `up`s: connect to the hostname.
